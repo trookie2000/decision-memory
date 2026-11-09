@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "decision-memory"
+version = "0.1.0"
+description = "Evidence-grounded extraction of decisions from development conversations"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+decision-memory = "decision_memory.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["decision_memory*"]

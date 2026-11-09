@@ -1,0 +1,19 @@
+[model]
+# Full Chat Completions URL from your approved gateway.
+endpoint = "https://your-gateway.example/v1/chat/completions"
+model = "your-model-name"
+api_key_env = "DECISION_MEMORY_API_KEY"
+timeout = 180
+retries = 2
+max_tokens = 12000
+max_input_chars = 120000
+json_mode = false
+
+# For gateways using custom headers, set api_key_env = "" above.
+# These values are environment variable NAMES, never actual credentials.
+# headers_env = { "x-token" = "MYTOKEN_APP_TOKEN", "x-username" = "MYTOKEN_USERNAME" }
+
+# Optional rates supplied by your gateway. Costs stay null until configured.
+# input_price_per_million = 0.0
+# output_price_per_million = 0.0
+# cost_unit = "CNY"
