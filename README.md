@@ -28,8 +28,7 @@ uv pip install --python .venv/bin/python -e .
 .venv/bin/decision-memory --help
 ```
 
-本机已将题面附件保存到 `data/public-samples.zip`，该目录被 Git 忽略。其他机器可从命题文档下载同名自测 ZIP，或传入解压后的目录。程序识别每个需求下 `上下文/需求确认记录.md` 与 `产物/需求分析.md`，以及 `上下文/技术设计确认记录.md` 与 `产物/技术方案.md`。每对文件形成一条输入。 [题面与附件](https://docs.corp.kuaishou.com/d/home/fcABTQPLkKC9sABNQdKh0_0YG)
-
+本机已将题面附件保存到 `data/public-samples.zip`，该目录被 Git 忽略。其他机器可从命题文档下载同名自测 ZIP，或传入解压后的目录。程序识别每个需求下 `上下文/需求确认记录.md` 与 `产物/需求分析.md`，以及 `上下文/技术设计确认记录.md` 与 `产物/技术方案.md`。每对文件形成一条输入。 [题面与附件]
 ## 配置模型网关
 
 复制 `config.example.toml` 为 `config.local.toml`，填写已获准使用的完整 Chat Completions URL 与模型名。环境变量名写入配置，密钥保存在当前进程环境中。
@@ -50,7 +49,7 @@ api_key_env = ""
 headers_env = { "x-token" = "MYTOKEN_APP_TOKEN", "x-username" = "MYTOKEN_USERNAME" }
 ```
 
-Mytoken 相关接入文档展示了自定义请求头的 Chat Completions 接口。本项目需要使用自身获准的入口和凭证，具体可用模型以该入口为准。当前万擎调用需要先补齐项目的服务目录和成本归属部门，再验证完整提取流程。 [网关接入示例](https://docs.corp.kuaishou.com/k/home/VO3BfBo2j_yo/fcABReDQV8PmNdInB0VjDgaAv)
+Mytoken 相关接入文档展示了自定义请求头的 Chat Completions 接口。本项目需要使用自身获准的入口和凭证，具体可用模型以该入口为准。当前万擎调用需要先补齐项目的服务目录和成本归属部门，再验证完整提取流程。 [网关接入示例]
 
 HTTP 错误会显示网关返回的错误码、说明和请求 ID，并屏蔽配置中的凭证。HTTP 402 的具体原因以网关说明为准。修正配置后，可使用 `batch --resume` 重试失败样本。
 
