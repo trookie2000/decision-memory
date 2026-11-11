@@ -92,6 +92,49 @@ def parse_json(text: str) -> dict:
     return result
 
 
+def http_error_message(error, sensitive_values) -> str:
+    hints = {
+        401: '请检查 API Key 是否有效',
+        402: '请核对接入点所属项目的余额、额度和计费状态，具体以网关原因为准',
+        403: '请检查 API Key 对该项目及模型接入点的调用权限',
+        429: '接口限流，请稍后重试或检查调用配额',
+    }
+    message = f'模型接口 HTTP {error.code}，' + hints.get(error.code, '请检查接口配置或服务状态')
+
+    def safe_detail(value):
+        if not isinstance(value, (str, int)) or isinstance(value, bool):
+            return ''
+        text = str(value)
+        for secret in sorted(set(sensitive_values), key=len, reverse=True):
+            if secret:
+                text = text.replace(secret, '[REDACTED]')
+        text = ''.join(char if char.isprintable() else ' ' for char in text)
+        return ' '.join(text.split())[:500]
+
+    payload = {}
+    try:
+        raw = error.read(16_385)
+        if len(raw) <= 16_384:
+            payload = json.loads(raw)
+    except (ValueError, OSError, http.client.HTTPException):
+        pass
+    details = []
+    request_id = error.headers.get('x-request-id') or error.headers.get('request-id')
+    if isinstance(payload, dict):
+        reason = payload.get('error')
+        reason = reason if isinstance(reason, dict) else payload
+        for key in ('code', 'type', 'message'):
+            value = safe_detail(reason.get(key))
+            if value:
+                details.append(f'{key}={value}')
+        request_id = request_id or payload.get('request_id') or payload.get('requestId') or reason.get('request_id')
+    if details:
+        message += '；网关 ' + '，'.join(details)[:700]
+    if request_id := safe_detail(request_id):
+        message += '；request_id=' + request_id[:128]
+    return message
+
+
 class ModelClient:
     def __init__(self, config: Config):
         self.config = config
@@ -123,7 +166,10 @@ class ModelClient:
             body['response_format'] = {'type': 'json_object'}
         if self.config.temperature is not None:
             body['temperature'] = self.config.temperature
-        request = urllib.request.Request(self.config.endpoint, data=json.dumps(body).encode(), headers=self.headers(), method='POST')
+        headers = self.headers()
+        sensitive_values = [value for name, value in headers.items() if name.lower() not in ('content-type', 'accept')]
+        sensitive_values += [value.removeprefix('Bearer ') for value in sensitive_values]
+        request = urllib.request.Request(self.config.endpoint, data=json.dumps(body).encode(), headers=headers, method='POST')
         call = {'http_attempts': 0, 'prompt_tokens': None, 'completion_tokens': None, 'seconds': 0, 'status': 'failed'}
         self.calls.append(call)
         started = time.monotonic()
@@ -139,9 +185,11 @@ class ModelClient:
                 except urllib.error.HTTPError as error:
                     code = error.code
                     retry_after = error.headers.get('Retry-After', '')
-                    error.close()
-                    if code not in (408, 429, 500, 502, 503, 504) or attempt == self.config.retries:
-                        raise ModelError(f'模型接口 HTTP {code}，请检查模型权限、接口配置或限流情况') from None
+                    try:
+                        if code not in (408, 429, 500, 502, 503, 504) or attempt == self.config.retries:
+                            raise ModelError(http_error_message(error, sensitive_values)) from None
+                    finally:
+                        error.close()
                     delay = float(retry_after) if retry_after.isdigit() else 2 ** attempt
                     time.sleep(min(delay, 10))
                 except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException):

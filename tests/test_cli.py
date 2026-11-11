@@ -56,13 +56,18 @@ class CliTests(unittest.TestCase):
                 archive.writestr(f'{name}/上下文/需求确认记录.md', self.dialogue.read_text())
                 archive.writestr(f'{name}/产物/需求分析.md', self.artifact.read_text())
         output = self.directory / 'runs'
-        with model_server([(401, {}), (200, completion(valid_payload())), (200, completion(valid_payload()))]) as (endpoint, requests):
+        gateway_error = {'error': {'code': 'InvalidToken', 'message': 'fixture token expired'},
+                         'request_id': 'fixture-batch-request'}
+        with model_server([(401, gateway_error), (200, completion(valid_payload())), (200, completion(valid_payload()))]) as (endpoint, requests):
             self.configure(endpoint)
             args = ['batch', '--dataset', dataset, '--config', self.config, '--mode', 'baseline', '--output', output]
             first = self.run_cli(*args)
             self.assertNotEqual(first.returncode, 0)
             summary = json.loads((output / 'summary.json').read_text())
             self.assertEqual(summary['failed'], 1)
+            self.assertIn('InvalidToken', summary['records'][0]['error'])
+            self.assertIn('fixture token expired', summary['records'][0]['error'])
+            self.assertIn('fixture-batch-request', summary['records'][0]['error'])
             second = self.run_cli(*args, '--resume')
             self.assertEqual(second.returncode, 0, second.stderr)
             self.assertEqual(len(requests), 3)

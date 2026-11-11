@@ -1,11 +1,14 @@
 __pycache__/
 *.pyc
 .venv/
+.idea/
+.ruff_cache/
 *.egg-info/
 build/
 dist/
 .superpowers/
 .env
+.env.*
 config.local.toml
 data/
 runs/

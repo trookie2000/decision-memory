@@ -8,7 +8,7 @@ Python 3.11+。运行时仅使用标准库。默认输出 JSON 和 Markdown，�
 
 已实现三个提取模式、精确证据校验、有限重试、批处理恢复、人工评测表及本地 HTTP 集成测试。官方 ZIP 中的四组阶段输入已完成读取检查。
 
-真实模型调用、语义准确率和费用待配置网关后测量。离线 HTTP 测试使用明确标注的固定响应验证程序行为。测试通过只代表工程路径通过，语义质量由实际样本结果及人工核查评定。
+截至 2026-11-11，33 项自动测试通过。真实样本调用已到达万擎网关，但网关因项目未配置服务树节点而返回 HTTP 402，尚未生成提取结果。语义准确率和费用仍待测量。离线 HTTP 测试使用固定响应验证程序行为，实际提取质量需要另行核查。
 
 ## 安装与离线检查
 
@@ -50,7 +50,9 @@ api_key_env = ""
 headers_env = { "x-token" = "MYTOKEN_APP_TOKEN", "x-username" = "MYTOKEN_USERNAME" }
 ```
 
-Mytoken 相关接入文档展示了自定义请求头的 Chat Completions 接口。本项目需要使用自身获准的入口和凭证，具体可用模型以该入口为准。真实兼容性联调待用户提供配置后执行。 [网关接入示例](https://docs.corp.kuaishou.com/k/home/VO3BfBo2j_yo/fcABReDQV8PmNdInB0VjDgaAv)
+Mytoken 相关接入文档展示了自定义请求头的 Chat Completions 接口。本项目需要使用自身获准的入口和凭证，具体可用模型以该入口为准。当前万擎调用需要先补齐项目的服务目录和成本归属部门，再验证完整提取流程。 [网关接入示例](https://docs.corp.kuaishou.com/k/home/VO3BfBo2j_yo/fcABReDQV8PmNdInB0VjDgaAv)
+
+HTTP 错误会显示网关返回的错误码、说明和请求 ID，并屏蔽配置中的凭证。HTTP 402 的具体原因以网关说明为准。修正配置后，可使用 `batch --resume` 重试失败样本。
 
 `json_mode` 默认关闭，确认网关支持后可开启。`temperature` 默认不发送。费用单价可配置为每百万输入和输出 token 的价格，未配置时 `estimated_cost` 为 `null`。估算按照标准输入/输出价格计算，缓存优惠、平台积分和失败调用计费以网关账单为准。
 

@@ -1,4 +1,6 @@
+import os
 import unittest
+from unittest.mock import patch
 
 from decision_memory.client import Config, ModelClient, ModelError
 from decision_memory.pipeline import extract
@@ -32,6 +34,54 @@ class PipelineTests(unittest.TestCase):
                 extract(self.sample, self.client(endpoint), 'baseline')
         self.assertNotIn('do not log', str(error.exception))
         self.assertEqual(len(requests), 1)
+
+    def test_payment_required_preserves_gateway_reason_without_retry(self):
+        response = {'error': {'code': 'InsufficientQuota', 'message': '当前项目可用额度不足'},
+                    'request_id': 'fixture-request-402', 'debug': 'private upstream detail'}
+        with model_server([(402, response)]) as (endpoint, requests):
+            client = self.client(endpoint)
+            with self.assertRaises(ModelError) as error:
+                extract(self.sample, client, 'baseline')
+        message = str(error.exception)
+        for detail in ('HTTP 402', 'InsufficientQuota', '当前项目可用额度不足', 'fixture-request-402'):
+            self.assertIn(detail, message)
+        self.assertNotIn('private upstream detail', message)
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(client.metrics()['http_attempts'], 1)
+
+    def test_gateway_error_redacts_credentials_before_truncating_details(self):
+        bearer = 'fixture-bearer-secret-123'
+        token = 'fixture-custom-secret-456'
+        response = {'error': {'code': 'QuotaExceeded',
+                              'message': f'{bearer}\n{token}\x1b[31m ' + 'x' * 450 + bearer},
+                    'request_id': 'fixture-request-private'}
+        with patch.dict(os.environ, {'FIXTURE_BEARER': bearer, 'FIXTURE_TOKEN': token}):
+            with model_server([(402, response)]) as (endpoint, requests):
+                client = ModelClient(Config(endpoint=endpoint, model='fixture',
+                    api_key_env='FIXTURE_BEARER', headers_env={'x-token': 'FIXTURE_TOKEN'}))
+                with self.assertRaises(ModelError) as error:
+                    client.complete('system', 'user')
+        message = str(error.exception)
+        self.assertIn('QuotaExceeded', message)
+        self.assertIn('[REDACTED]', message)
+        self.assertNotIn(bearer[:12], message)
+        self.assertNotIn(token[:12], message)
+        self.assertNotIn('\n', message)
+        self.assertNotIn('\x1b', message)
+        self.assertLess(len(message), 1000)
+        self.assertEqual(len(requests), 1)
+
+    def test_unstructured_or_oversized_error_body_keeps_http_status(self):
+        responses = ['private unstructured response', ['private list'],
+                     {'message': 'private oversized response ' * 1000}]
+        for response in responses:
+            with self.subTest(response_type=type(response).__name__):
+                with model_server([(402, response)]) as (endpoint, requests):
+                    with self.assertRaises(ModelError) as error:
+                        self.client(endpoint).complete('system', 'user')
+                self.assertIn('HTTP 402', str(error.exception))
+                self.assertNotIn('private', str(error.exception))
+                self.assertEqual(len(requests), 1)
 
     def test_invalid_json_gets_one_repair_and_keeps_original_usage(self):
         with model_server([(200, completion('broken')), (200, completion(valid_payload()))]) as (endpoint, requests):
