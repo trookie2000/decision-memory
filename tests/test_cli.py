@@ -109,6 +109,82 @@ class CliTests(unittest.TestCase):
         self.assertEqual(scored.returncode, 0, scored.stderr)
         self.assertIsNone(json.loads(scored.stdout)['precision_reviewed'])
 
+    def test_select_official_stage_and_check_reference_quotes(self):
+        dataset = self.directory / 'samples.zip'
+        with zipfile.ZipFile(dataset, 'w') as archive:
+            archive.writestr('REQ-1/上下文/需求确认记录.md', self.dialogue.read_text())
+            archive.writestr('REQ-1/产物/需求分析.md', self.artifact.read_text())
+            archive.writestr('REQ-1/上下文/技术设计确认记录.md', 'OTHER_STAGE_SECRET')
+            archive.writestr('REQ-1/产物/技术方案.md', 'OTHER_STAGE_ARTIFACT')
+            archive.writestr('评测标注/答案.md', 'ANNOTATION_SECRET')
+        with model_server([(200, completion(valid_payload()))]) as (endpoint, requests):
+            self.configure(endpoint)
+            extracted = self.run_cli('extract', '--dataset', dataset, '--sample-id', 'REQ-1-analysis',
+                                     '--config', self.config, '--mode', 'baseline', '--output', self.directory / 'official.json')
+        self.assertEqual(extracted.returncode, 0, extracted.stderr)
+        self.assertNotIn('SECRET', json.dumps(requests))
+        references = self.directory / 'references.json'
+        references.write_text(json.dumps([{'id': 'R1', 'text': '120 元',
+                               'evidence': [{'source': 'dialogue', 'quote': '120 元'}]}]))
+        checked = self.run_cli('review', 'check-references', '--dataset', dataset, '--sample-id', 'REQ-1-analysis',
+                               '--references', references)
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        self.assertEqual(json.loads(checked.stdout)['semantic_quality'], 'requires_human_review')
+
+    def test_battle_help_is_available_without_network(self):
+        help_result = self.run_cli('battle', '--help')
+        self.assertEqual(help_result.returncode, 0)
+        for command in ('doctor', 'start', 'resume', 'status', 'reconcile'):
+            self.assertIn(command, help_result.stdout)
+
+    def test_v2_review_cli_keeps_raw_output_and_requires_explicit_coverage(self):
+        from decision_memory.evaluation import digest
+        from decision_memory.pipeline import extract
+        from decision_memory.client import Config, ModelClient
+        from decision_memory.sources import load_sample
+        from decision_memory.storage import save_result
+        prediction = self.directory / 'prediction.json'
+        with model_server([(200, completion(valid_payload()))]) as (endpoint, requests):
+            result = extract(load_sample(self.dialogue, self.artifact, 'analysis'),
+                             ModelClient(Config(endpoint=endpoint, model='fixture', api_key_env='')), 'baseline')
+            save_result(prediction, result)
+        original_prediction = prediction.read_bytes()
+        references = self.directory / 'references.json'
+        reference_rows = [{'id': 'R1', 'text': '门槛 120 元'}]
+        references.write_text(json.dumps(reference_rows))
+        policy = self.directory / 'policy.json'
+        policy.write_text(json.dumps({'schema_version': 1, 'references_digest': digest(reference_rows),
+                                     'assignments': [{'reference_id': 'R1', 'kind': 'decision', 'rationale': 'fixture'}]}))
+        worksheet = self.directory / 'worksheet.json'
+        initialized = self.run_cli('review', 'init', '--result', prediction, '--references', references,
+                                   '--schema-version', '2', '--reference-policy', policy, '--review-kind', 'agent',
+                                   '--output', worksheet)
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+        judgments = self.directory / 'judgments.json'
+        judgments.write_text(json.dumps([{'item_id': 'K001', 'correct': True, 'citation_support': True,
+                                         'matches': ['R1'], 'notes': 'fixture'}]))
+        reviewed = self.directory / 'reviewed.json'
+        applied = self.run_cli('review', 'apply', '--worksheet', worksheet, '--judgments', judgments, '--output', reviewed)
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        partial_score = json.loads(applied.stdout)['score']
+        self.assertIsNone(partial_score['reference_coverage']['decision']['coverage'])
+        coverage = self.directory / 'coverage.json'
+        coverage.write_text(json.dumps([{'reference_id': 'R1', 'coverage': 'full', 'supported_by': [
+            {'target': 'item', 'id': 'K001', 'field': 'conclusion'}], 'notes': 'fixture full'}]))
+        complete_review = self.directory / 'complete.json'
+        completed = self.run_cli('review', 'apply', '--worksheet', reviewed, '--reference-judgments', coverage,
+                                 '--output', complete_review)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        scored = self.run_cli('review', 'score', '--worksheet', complete_review)
+        self.assertEqual(scored.returncode, 0, scored.stderr)
+        final_score = json.loads(scored.stdout)
+        self.assertTrue(final_score['complete'])
+        self.assertEqual(final_score['human_review'], 'pending')
+        self.assertEqual(prediction.read_bytes(), original_prediction)
+        repeated = self.run_cli('review', 'apply', '--worksheet', reviewed, '--reference-judgments', coverage,
+                                '--output', complete_review)
+        self.assertEqual(repeated.returncode, 2)
+
     def test_interrupted_batch_response_records_failure_and_continues(self):
         dataset = self.directory / 'samples.zip'
         with zipfile.ZipFile(dataset, 'w') as archive:

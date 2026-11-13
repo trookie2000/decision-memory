@@ -74,7 +74,7 @@ def load_sample(dialogue: Path, artifact: Path, stage: str) -> Sample:
                        dialogue.parent.name + '-' + stage, str(dialogue), str(artifact))
 
 
-def discover_samples(path: Path) -> list[Sample]:
+def discover_samples(path: Path, sample_id: str | None = None) -> list[Sample]:
     """Read recognized stage pairs from a ZIP or directory, never annotation contents."""
     archive = None
     try:
@@ -108,11 +108,13 @@ def discover_samples(path: Path) -> list[Sample]:
                 if parts[-1] != dialogue_name:
                     continue
                 parent = PurePosixPath(name).parent.parent
+                candidate_id = parent.name + '-' + stage
+                if sample_id is not None and candidate_id != sample_id:
+                    continue
                 artifact = (parent / '产物' / artifact_name).as_posix()
                 if artifact not in names:
                     raise ValueError(f'缺少阶段最终产物 {artifact}')
-                sample_id = parent.name + '-' + stage
-                samples.append(make_sample(read(name), read(artifact), stage, sample_id, name, artifact))
+                samples.append(make_sample(read(name), read(artifact), stage, candidate_id, name, artifact))
         if not samples:
             raise ValueError('未找到官方格式的阶段样本')
         if len({item.sample_id for item in samples}) != len(samples):

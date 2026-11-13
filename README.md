@@ -6,9 +6,19 @@ Python 3.11+。运行时仅使用标准库。默认输出 JSON 和 Markdown，�
 
 ## 当前验证范围
 
-已实现三个提取模式、精确证据校验、有限重试、批处理恢复、人工评测表及本地 HTTP 集成测试。官方 ZIP 中的四组阶段输入已完成读取检查。
+2026-11-13，原 S004～S009 批次已完成 6/6。两位真实 Mario 员工完成出题、审题和评分，CLI 独立调用 Kimi 提取。S006、S008 经两轮修订。共保存 28 条决策和 8 条未决项；28 条决策均获员工肯定初评，人工确认仍待完成。逐例记录见本机 `runs/continuous-six-20261112/evaluation-summary.md`。
 
-截至 2026-11-11，33 项自动测试通过。真实样本调用已到达万擎网关，但网关因项目未配置服务树节点而返回 HTTP 402，尚未生成提取结果。语义准确率和费用仍待测量。离线 HTTP 测试使用固定响应验证程序行为，实际提取质量需要另行核查。
+后续已完成官方附件四阶段的真实 baseline 提取，保存 36 条决策和 10 条未决项。四份输出均通过输入版本、保存完整性和逐字引用校验，语义评审仍需核查。实测配置和范围见 [官方样本记录](docs/official-evaluation.md)。
+
+流式接收和推理强度配置已补齐，123 项自动测试通过。旧六例的 310 份受保护文件仍通过离线审计，S003 也未改动。工程测试、员工初评和正式比赛成绩分别记录。提交前还需人工语义核查、补齐阶段参考和三个模式对照，见 [提交前验证](docs/submission-readiness.md)。
+
+连续生成和评测使用 `series start/resume/status/stop`。它启动独立后台进程，完成一个 case 后自动进入下一个。启动前检查模型、Mario 和 Docs；遇到未知发送或无效回传时保存状态并停止。原六例已经结束，不需再次恢复。新批次与阻塞恢复见 [连续批次说明](docs/coordinator.md#连续后台批次)。
+
+大任务使用独立 Docs 输入文档和短 KIM 通知，回传时校验任务与输入摘要。明确的 `MESSAGE_TOO_LARGE_TO_SEND` 拒绝可用 `battle recover-delivery` 恢复。已有预测可继续评分；新增模型提取需要启动进程继承本地 `WQ_API_KEY`。
+
+CLI 已实现三个提取模式、逐字段证据校验、有限重试、批量恢复和评测表。协调器支持最多三轮返修、持久状态和预测与参考隔离。员工调用使用指定测试群与现有两位员工；群内回复尚未独立回读，发送回执与员工 Docs 结果分别保存。
+
+历史接口错误、实际恢复过程与评分限制见 [实验报告](docs/experiment-report.md)。运行这些命令无需开启 MyFlicker 远程控制。
 
 ## 安装与离线检查
 
@@ -40,7 +50,11 @@ cp config.example.toml config.local.toml
 # 将密钥设置到配置中 api_key_env 指定的环境变量。
 ```
 
-接口需要接受 `model`、`messages`、`stream=false` 和 `max_tokens`，返回 `choices[0].message.content`，且正常完成时 `finish_reason` 为 `stop`。过滤、拒绝、工具调用和缺少完成状态均会返回明确错误。支持 `Authorization: Bearer` 或 `headers_env` 指定的自定义请求头。自定义头的示例如下，填写的是环境变量名。
+接口需要接受 `model`、`messages`、`stream` 和 `max_tokens`。默认使用非流式响应，读取 `choices[0].message.content`。正常完成时 `finish_reason` 必须为 `stop`；过滤、拒绝、工具调用和缺少结束状态均会返回错误。
+
+网关支持 SSE 时，可在模型配置中设置 `stream = true`。客户端收齐完整文本和结束标记后才校验、保存结果，断流按有限次数重试。`timeout` 同时限制流式读取的总时长，可按需要提高到 600 秒。`reasoning_effort` 默认为不发送，取值须由所用接口支持；例如本机 Kimi 官方样本实测使用 `"low"`。推理强度参数的模型差异可参考 [Moonshot 接口校验说明](https://github.com/MoonshotAI/Kimi-Vendor-Verifier/blob/main/tests/k3_features/test_thinking_effort.py)。
+
+支持 `Authorization: Bearer` 或 `headers_env` 指定的自定义请求头。下面填写的是环境变量名。
 
 ```toml
 [model]
@@ -50,13 +64,21 @@ api_key_env = ""
 headers_env = { "x-token" = "MYTOKEN_APP_TOKEN", "x-username" = "MYTOKEN_USERNAME" }
 ```
 
-Mytoken 相关接入文档展示了自定义请求头的 Chat Completions 接口。本项目需要使用自身获准的入口和凭证，具体可用模型以该入口为准。当前万擎调用需要先补齐项目的服务目录和成本归属部门，再验证完整提取流程。 [网关接入示例](https://docs.corp.kuaishou.com/k/home/VO3BfBo2j_yo/fcABReDQV8PmNdInB0VjDgaAv)
+Mytoken 相关接入文档展示了自定义请求头的 Chat Completions 接口。本项目需要使用自身获准的入口和凭证，具体可用模型以该入口为准。旧万擎项目曾因服务树配置缺失返回 HTTP 402，后续已切换至另一个获准使用的部门项目并完成一次真实提取。 [网关接入示例](https://docs.corp.kuaishou.com/k/home/VO3BfBo2j_yo/fcABReDQV8PmNdInB0VjDgaAv)
 
 HTTP 错误会显示网关返回的错误码、说明和请求 ID，并屏蔽配置中的凭证。HTTP 402 的具体原因以网关说明为准。修正配置后，可使用 `batch --resume` 重试失败样本。
 
 `json_mode` 默认关闭，确认网关支持后可开启。`temperature` 默认不发送。费用单价可配置为每百万输入和输出 token 的价格，未配置时 `estimated_cost` 为 `null`。估算按照标准输入/输出价格计算，缓存优惠、平台积分和失败调用计费以网关账单为准。
 
 ## 提取和比较
+
+只运行一个官方阶段，不读取其他阶段正文或评测标注：
+
+```bash
+.venv/bin/decision-memory extract --dataset data/public-samples.zip \
+  --sample-id REQ-20261012-auction-heat-analysis \
+  --config config.local.toml --mode baseline --output runs/official-one/result.json
+```
 
 单个阶段可使用任意 UTF-8 Markdown 文件。
 
@@ -107,6 +129,8 @@ python3 -m decision_memory validate --dataset data/public-samples.zip \
 resume 只复用原始文件哈希、输入指纹、配置、模式、提示词版本及完整性校验都匹配的结果，缺失结果会重跑。BOM 和换行字节参与原始文件哈希。已有 Markdown 会与 JSON 的确定性渲染结果核对，缺失时补建，被改动时保留该文件并报错。变化后的输入、配置或交接文本请使用新输出目录。复用项带 `status=reused`，其 `metrics` 是原始运行记录，本次新增消耗只统计新运行项。输出目录有运行锁，强制终止留下 `.run.lock` 时，确认原进程已停止后清理该锁再继续。
 
 ## 人工评测
+
+S003 的旧 `recall=0.8` 只计 items 的参考匹配，不能解释为漏提 20%；原 open_questions 已保留“2 秒理由未说明”。现增加可选 `review init --schema-version 2 --reference-policy ...` 与 `review apply`：分别评价决策和未知信息，并显式标注参考的 full／partial／absent／未审。旧表与协调器旧评分不自动迁移。详见 [评测口径](docs/evaluation-protocol.md)。
 
 根据官方标注为各阶段整理独立的参考条目 JSON 数组。每条使用唯一 `id` 与 `text`，示例为 `[{"id":"R1","text":"需要覆盖的有效决策与边界"}]`。跨阶段标注应核对当前输入是否含有证据后再纳入。
 

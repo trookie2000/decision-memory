@@ -1,0 +1,16 @@
+[battle]
+# All external writes are restricted to this authorized test group and employees.
+mcp_url = "http://127.0.0.1:38399/mcp"
+ks_cli = "/Users/tianxupu/.local/bin/ks-cli"
+group_id = "7419479552888854"
+author_id = "10120718088572"
+reviewer_id = "10664440173316"
+request_timeout = 150
+docs_timeout = 45
+worker_timeout = 600
+poll_interval = 10
+max_rounds = 3
+notification_max_bytes = 4000 # Project policy, NOT a KIM platform limit.
+
+# Requires the installed docs-shuttle capture wrapper; defaults to its user path.
+# capture_script = "/absolute/path/to/docs-shared-capture.js"

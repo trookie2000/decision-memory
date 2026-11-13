@@ -3,11 +3,28 @@ import unittest
 import zipfile
 import hashlib
 from pathlib import Path
+from unittest.mock import patch
 
 from decision_memory.sources import discover_samples, load_sample, make_sample
 
 
 class SourceTests(unittest.TestCase):
+    def test_selecting_one_stage_reads_only_its_two_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'samples.zip'
+            with zipfile.ZipFile(path, 'w') as archive:
+                archive.writestr('REQ-1/上下文/需求确认记录.md', 'analysis only')
+                archive.writestr('REQ-1/产物/需求分析.md', 'analysis artifact')
+                archive.writestr('REQ-1/上下文/技术设计确认记录.md', 'other phase must not be read')
+                archive.writestr('REQ-1/产物/技术方案.md', 'other artifact')
+                archive.writestr('评测标注/秘密.md', 'gold must not be read')
+            original = zipfile.ZipFile.read
+            with patch.object(zipfile.ZipFile, 'read', autospec=True, side_effect=original) as reads:
+                result = discover_samples(path, sample_id='REQ-1-analysis')
+            self.assertEqual(len(result), 1)
+            self.assertEqual([call.args[1] for call in reads.call_args_list],
+                             ['REQ-1/上下文/需求确认记录.md', 'REQ-1/产物/需求分析.md'])
+
     def test_unicode_line_and_message_locations_survive_blank_lines(self):
         sample = make_sample('\ufeff# 对话\r\n\r\n**用户：**\r\n门槛改成 120 元。\r\n', '# 最终\n门槛 120 元。', 'design')
         source = sample.catalog['D00004']

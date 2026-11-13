@@ -3,11 +3,13 @@
 import argparse
 import json
 import sys
+import subprocess
 import zipfile
 from pathlib import Path
 
 from .client import Config, ModelClient, ModelError
-from .evaluation import make_worksheet, score_worksheet
+from .collaboration import BattleConfig, DocsCLI, MarioMCP, TransportError
+from .evaluation import make_worksheet, score_worksheet, validate_references
 from .pipeline import MODES, extract
 from .sources import STAGES, discover_samples, load_sample
 from .storage import read_json, render_markdown, save_result, validate_saved, write_json, write_text
@@ -20,7 +22,9 @@ def parser():
     inspect.add_argument('--dataset', required=True, type=Path)
     inspect.add_argument('--output', type=Path)
     single = commands.add_parser('extract', help='提取一个阶段的决策与约束')
-    add_sample_arguments(single)
+    add_sample_arguments(single, required=False)
+    single.add_argument('--dataset', type=Path, help='从官方数据集选一个阶段；不读取评测标注')
+    single.add_argument('--sample-id', help='--dataset 中的完整阶段编号')
     add_model_arguments(single)
     single.add_argument('--output', required=True, type=Path)
     batch = commands.add_parser('batch', help='对官方格式样本批量提取')
@@ -38,10 +42,142 @@ def parser():
     initialize.add_argument('--result', required=True, type=Path)
     initialize.add_argument('--references', type=Path)
     initialize.add_argument('--output', required=True, type=Path)
+    initialize.add_argument('--schema-version', type=int, choices=(1, 2), default=1)
+    initialize.add_argument('--reference-policy', type=Path, help='v2 的 decision/uncertainty 分类策略')
+    initialize.add_argument('--review-kind', choices=('human', 'agent'), default='human')
     score = review_commands.add_parser('score')
     score.add_argument('--worksheet', required=True, type=Path)
     score.add_argument('--output', type=Path)
+    apply_review = review_commands.add_parser('apply', help='只导入 v2 的判定，不改写原始预测或参考')
+    apply_review.add_argument('--worksheet', required=True, type=Path)
+    apply_review.add_argument('--judgments', type=Path)
+    apply_review.add_argument('--open-question-judgments', type=Path)
+    apply_review.add_argument('--reference-judgments', type=Path)
+    apply_review.add_argument('--output', required=True, type=Path)
+    refs = review_commands.add_parser('check-references', help='离线核对当前阶段参考答案的 ID 和逐字引文')
+    refs.add_argument('--dataset', required=True, type=Path)
+    refs.add_argument('--sample-id', required=True)
+    refs.add_argument('--references', required=True, type=Path)
+    refs.add_argument('--output', type=Path)
+    add_battle_arguments(commands)
+    add_series_arguments(commands)
     return root
+
+
+def add_series_arguments(commands):
+    series = commands.add_parser('series', help='独立后台连续生成和评测多个 case')
+    actions = series.add_subparsers(dest='series_command', required=True)
+    start = actions.add_parser('start', help='启动有限批次；默认在后台执行')
+    start.add_argument('--config', required=True, type=Path)
+    start.add_argument('--model-config', required=True, type=Path)
+    start.add_argument('--manifest', required=True, type=Path)
+    start.add_argument('--output', required=True, type=Path)
+    start.add_argument('--mode', choices=MODES, default='baseline')
+    start.add_argument('--max-seconds', type=int, default=7200)
+    start.add_argument('--foreground', action='store_true')
+    for action in ('resume', 'status', 'stop', 'run'):
+        command = actions.add_parser(action)
+        command.add_argument('--output', required=True, type=Path)
+        if action == 'resume':
+            command.add_argument('--foreground', action='store_true')
+            command.add_argument('--retry-extraction', action='store_true')
+        if action == 'run':
+            command.add_argument('--resume', action='store_true')
+            command.add_argument('--retry-extraction', action='store_true')
+
+
+def run_series(args):
+    from .series import Series
+    if args.series_command == 'start':
+        series = Series.create(args.output, BattleConfig.load(args.config), args.model_config,
+                               read_json(args.manifest), mode=args.mode, max_seconds=args.max_seconds)
+        result = series.run() if args.foreground else series.launch()
+    else:
+        series = Series(args.output)
+        if args.series_command == 'status':
+            return series.summary(), 0
+        if args.series_command == 'stop':
+            return series.request_stop(), 0
+        if args.series_command == 'run':
+            result = series.run(resume=args.resume, retry_extraction=args.retry_extraction)
+        else:
+            result = (series.run(resume=True, retry_extraction=args.retry_extraction) if args.foreground
+                      else series.launch(resume=True, retry_extraction=args.retry_extraction))
+    return result, 0 if result['status'] == 'completed' or result.get('launch') == 'started' else 2
+
+
+def add_battle_arguments(commands):
+    battle = commands.add_parser('battle', help='通过真实 Mario 员工出题、审题、修订与独立评测')
+    actions = battle.add_subparsers(dest='battle_command', required=True)
+    doctor = actions.add_parser('doctor', help='只读核对 Mario 工具/技能及可选 Docs 文档')
+    doctor.add_argument('--config', required=True, type=Path)
+    doctor.add_argument('--doc-id')
+    start = actions.add_parser('start', help='在指定测试群启动新的协调任务')
+    start.add_argument('--config', required=True, type=Path)
+    start.add_argument('--output', required=True, type=Path)
+    start.add_argument('--sample-id', required=True)
+    start.add_argument('--stage', required=True, choices=STAGES)
+    start.add_argument('--brief-file', required=True, type=Path)
+    start.add_argument('--clarification-file', type=Path, help='在首次审题时才加入的合成测试条件')
+    start.add_argument('--model-config', type=Path)
+    start.add_argument('--mode', choices=MODES, default='baseline')
+    start.add_argument('--wait-seconds', type=int, default=45)
+    resume = actions.add_parser('resume', help='恢复原任务，绝不重发未知结果的消息')
+    resume.add_argument('--output', required=True, type=Path)
+    resume.add_argument('--wait-seconds', type=int, default=45)
+    resume.add_argument('--model-config', type=Path)
+    resume.add_argument('--retry-extraction', action='store_true', help='显式开始新的提取尝试；保留失败记录')
+    status = actions.add_parser('status', help='只读查看持久状态')
+    status.add_argument('--output', required=True, type=Path)
+    audit = actions.add_parser('audit', help='完全离线重放回传、冻结输入、原始预测与评分的完整性检查')
+    audit.add_argument('--output', required=True, type=Path)
+    audit.add_argument('--report', type=Path)
+    reconcile = actions.add_parser('reconcile', help='接回人工核对过的真实创建/派发回执，不重发')
+    reconcile.add_argument('--output', required=True, type=Path)
+    reconcile.add_argument('--create-receipt', type=Path)
+    reconcile.add_argument('--dispatch-receipt', type=Path)
+    reconcile.add_argument('--operation', help='回执所属的已有操作，例如 r01-author')
+    recover = actions.add_parser('recover-delivery', help='对明确体积拒绝改用 Docs 输入；不重发未知发送')
+    recover.add_argument('--output', required=True, type=Path)
+    recover.add_argument('--operation', required=True)
+    recover.add_argument('--reason', required=True, help='已获准恢复的原因，写入审计记录')
+
+
+def run_battle(args):
+    from .coordinator import Battle
+    if args.battle_command == 'doctor':
+        config = BattleConfig.load(args.config)
+        capabilities = MarioMCP(config).discover()
+        if args.doc_id:
+            document = DocsCLI(config).fetch(args.doc_id)
+            capabilities['document'] = {'doc_id': args.doc_id, 'characters': len(document['content']),
+                                        'capture': document['capture']}
+        return {'read_only': True, **capabilities}, 0
+    if args.battle_command == 'start':
+        battle = Battle.create(args.output, BattleConfig.load(args.config), args.sample_id, args.stage,
+                               args.brief_file.read_text(encoding='utf-8'),
+                               clarification=args.clarification_file.read_text(encoding='utf-8') if args.clarification_file else '',
+                               model_config=args.model_config, mode=args.mode)
+        summary = battle.run(args.wait_seconds)
+    else:
+        battle = Battle(args.output)
+        if args.battle_command == 'status':
+            return battle.summary(), 0
+        if args.battle_command == 'recover-delivery':
+            return battle.recover_rejected_dispatch(args.operation, args.reason), 0
+        if args.battle_command == 'audit':
+            report = battle.audit()
+            if args.report:
+                write_json(args.report, report)
+            return report, 0
+        if args.battle_command == 'reconcile':
+            if not args.create_receipt and not args.dispatch_receipt:
+                raise ValueError('请提供经核对的真实 create-receipt 或 dispatch-receipt')
+            return battle.reconcile(create_receipt=args.create_receipt, dispatch_receipt=args.dispatch_receipt,
+                                    operation=args.operation), 0
+        summary = battle.run(args.wait_seconds, args.retry_extraction, args.model_config)
+    code = 0 if summary['status'] == 'agent_review_complete' else (3 if summary['status'] in ('waiting', 'running') else 2)
+    return summary, code
 
 
 def add_sample_arguments(command, required=True):
@@ -111,6 +247,10 @@ def batch_extract(args):
 
 
 def run(args):
+    if args.command == 'series':
+        return run_series(args)
+    if args.command == 'battle':
+        return run_battle(args)
     if args.command == 'inspect':
         value = inspect_dataset(args.dataset)
         if args.output:
@@ -119,7 +259,17 @@ def run(args):
     if args.command == 'extract':
         if args.output.exists() or args.output.with_suffix('.md').exists() or args.output.suffix != '.json':
             raise ValueError('需要尚不存在的 .json 输出路径')
-        sample = load_sample(args.dialogue, args.artifact, args.stage)
+        if args.dataset:
+            if not args.sample_id or any((args.dialogue, args.artifact, args.stage)):
+                raise ValueError('--dataset 需要 --sample-id，且不能同时传独立文件参数')
+            matches = discover_samples(args.dataset, sample_id=args.sample_id)
+            if len(matches) != 1:
+                raise ValueError('数据集中没有对应的唯一阶段 sample-id')
+            sample = matches[0]
+        else:
+            if args.sample_id or not all((args.dialogue, args.artifact, args.stage)):
+                raise ValueError('需要 --dataset/--sample-id 或完整的 --dialogue/--artifact/--stage')
+            sample = load_sample(args.dialogue, args.artifact, args.stage)
         client = ModelClient(Config.load(args.config))
         result = extract(sample, client, args.mode)
         save_result(args.output, result)
@@ -140,11 +290,31 @@ def run(args):
             sample = load_sample(args.dialogue, args.artifact, args.stage)
         validate_saved(result, sample)
         return {'exact_citations': 'passed', 'items': len(result['items']), 'semantic_quality': 'requires_human_review'}, 0
+    if args.review_command == 'check-references':
+        sample = discover_samples(args.dataset, sample_id=args.sample_id)[0]
+        references = validate_references(read_json(args.references), sample)
+        checked = {'sample_id': sample.sample_id, 'references': len(references), 'exact_reference_quotes': 'passed',
+                   'input_fingerprint': sample.fingerprint, 'semantic_quality': 'requires_human_review'}
+        if args.output:
+            write_json(args.output, checked)
+        return checked, 0
     if args.review_command == 'init':
         references = read_json(args.references) if args.references else []
-        worksheet = make_worksheet(read_json(args.result), references)
+        policy = read_json(args.reference_policy) if args.reference_policy else None
+        worksheet = make_worksheet(read_json(args.result), references, args.review_kind,
+                                   schema_version=args.schema_version, reference_policy=policy)
         write_json(args.output, worksheet)
         return {'output': str(args.output), 'pending_items': len(worksheet['items'])}, 0
+    if args.review_command == 'apply':
+        from .review_v2 import apply_review_v2
+        if not any((args.judgments, args.open_question_judgments, args.reference_judgments)):
+            raise ValueError('至少提供一组要导入的 judgments')
+        reviewed = apply_review_v2(read_json(args.worksheet),
+                                   judgments=read_json(args.judgments) if args.judgments else None,
+                                   open_question_judgments=read_json(args.open_question_judgments) if args.open_question_judgments else None,
+                                   reference_judgments=read_json(args.reference_judgments) if args.reference_judgments else None)
+        write_json(args.output, reviewed)
+        return {'output': str(args.output), 'score': score_worksheet(reviewed)}, 0
     score = score_worksheet(read_json(args.worksheet))
     if args.output:
         write_json(args.output, score)
@@ -157,6 +327,6 @@ def main(argv=None):
         value, code = run(args)
         print(json.dumps(value, ensure_ascii=False, indent=2))
         return code
-    except (ValueError, OSError, ModelError, zipfile.BadZipFile) as error:
+    except (ValueError, OSError, ModelError, TransportError, subprocess.SubprocessError, zipfile.BadZipFile) as error:
         print('错误 ' + str(error), file=sys.stderr)
         return 2

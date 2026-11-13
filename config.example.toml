@@ -9,6 +9,11 @@ max_tokens = 12000
 max_input_chars = 120000
 json_mode = false
 
+# Optional: only enable when supported by the selected gateway/model.
+# stream = true
+# reasoning_effort = "low"
+# For a long streamed response, timeout is also the total stream time limit.
+
 # For gateways using custom headers, set api_key_env = "" above.
 # These values are environment variable NAMES, never actual credentials.
 # headers_env = { "x-token" = "MYTOKEN_APP_TOKEN", "x-username" = "MYTOKEN_USERNAME" }

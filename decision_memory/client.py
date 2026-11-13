@@ -4,6 +4,8 @@ import json
 import http.client
 import math
 import os
+import socket
+import threading
 import time
 import tomllib
 import urllib.error
@@ -37,6 +39,8 @@ class Config:
     max_tokens: int = 12000
     max_input_chars: int = 120000
     json_mode: bool = False
+    stream: bool = False
+    reasoning_effort: str | None = None
     temperature: float | None = None
     input_price_per_million: float | None = None
     output_price_per_million: float | None = None
@@ -51,6 +55,11 @@ class Config:
             raise ValueError('模型接口需要 HTTPS，本机测试地址可使用 HTTP')
         if not isinstance(self.model, str) or not self.model.strip():
             raise ValueError('model 不能为空')
+        if type(self.stream) is not bool:
+            raise ValueError('stream 必须为布尔值')
+        if self.reasoning_effort is not None and self.reasoning_effort not in (
+                'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'):
+            raise ValueError('reasoning_effort 需要接口支持的推理强度名称')
         for name, low, high in (('timeout', 1, 600), ('retries', 0, 3),
                                 ('max_tokens', 1, 64000), ('max_input_chars', 100, 1_000_000)):
             value = getattr(self, name)
@@ -76,7 +85,107 @@ class Config:
             raise ValueError('配置格式错误，请对照 config.example.toml') from error
 
     def public(self):
-        return asdict(self)
+        values = asdict(self)
+        # Preserve signatures of saved non-streaming results from older versions.
+        if not self.stream:
+            values.pop('stream')
+        if self.reasoning_effort is None:
+            values.pop('reasoning_effort')
+        return values
+
+
+def read_stream_completion(response, timeout):
+    """Assemble text SSE chunks without accepting a partial/model-tool response."""
+    if 'text/event-stream' not in response.headers.get('Content-Type', ''):
+        raise ModelOutputError('流式接口未返回 text/event-stream')
+    content, pending = [], []
+    usage, finish, done = {}, None, False
+    size = 0
+    started = time.monotonic()
+
+    def consume():
+        nonlocal usage, finish, done
+        data = b'\n'.join(pending)
+        pending.clear()
+        if not data:
+            return
+        if data == b'[DONE]':
+            done = True
+            return
+        try:
+            event = json.loads(data)
+        except (ValueError, UnicodeDecodeError) as error:
+            raise ModelOutputError('模型流式响应不是有效 JSON 事件') from error
+        if not isinstance(event, dict) or not isinstance(event.get('choices', []), list):
+            raise ModelOutputError('模型流式事件不符合 Chat Completions 协议')
+        if event.get('error'):
+            raise ModelError('模型流式接口返回错误')
+        if event.get('usage') is not None:
+            if not isinstance(event['usage'], dict):
+                raise ModelOutputError('模型 usage 不符合 Chat Completions JSON 协议')
+            usage = event['usage']
+        for choice in event.get('choices', []):
+            if not isinstance(choice, dict):
+                raise ModelOutputError('模型流式 choice 格式无效')
+            delta = choice.get('delta') or {}
+            if not isinstance(delta, dict):
+                raise ModelOutputError('模型流式 delta 格式无效')
+            if delta.get('refusal') or delta.get('tool_calls') or delta.get('function_call'):
+                raise ModelError('模型未正常完成文本输出，请检查网关完成状态或拒绝原因')
+            text = delta.get('content')
+            if text is not None:
+                if not isinstance(text, str):
+                    raise ModelOutputError('模型 content 必须为文本')
+                content.append(text)
+            if choice.get('finish_reason') is not None:
+                if finish is not None and finish != choice['finish_reason']:
+                    raise ModelOutputError('模型流式完成状态不一致')
+                finish = choice['finish_reason']
+
+    # A socket idle timeout does not bound a peer dripping an unfinished line.
+    # Shut down the owned urllib socket at the absolute deadline to unblock even
+    # an in-progress buffered/chunked read (CPython's HTTP/HTTPS response layout).
+    stream_socket = getattr(getattr(getattr(response, 'fp', None), 'raw', None), '_sock', None)
+    if stream_socket is None:
+        raise ModelError('流式接口无法设置总时限，请检查 HTTP 传输配置')
+    expired = threading.Event()
+
+    def expire():
+        expired.set()
+        try:
+            stream_socket.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass  # A just-completed response may already have closed its socket.
+
+    timer = threading.Timer(timeout, expire)
+    timer.daemon = True
+    timer.start()
+    try:
+        while line := response.readline(8_000_001):
+            size += len(line)
+            if size > 8_000_000:
+                raise ModelError('模型响应超过 8 MB 上限')
+            if expired.is_set() or time.monotonic() - started > timeout:
+                raise TimeoutError('模型流式响应超过总时限')
+            if line.startswith(b'data:'):
+                pending.append(line[5:].lstrip(b' ').rstrip(b'\r\n'))
+            elif not line.strip():
+                consume()
+                if done:
+                    break
+        if expired.is_set() or time.monotonic() - started > timeout:
+            raise TimeoutError('模型流式响应超过总时限')
+        if not done:
+            raise http.client.IncompleteRead(b'')
+        if finish is None:
+            raise ModelError('模型流式响应缺少完整结束状态，不能采纳部分输出')
+        return {'choices': [{'message': {'content': ''.join(content)}, 'finish_reason': finish}], 'usage': usage}
+    except (OSError, http.client.HTTPException) as error:
+        if expired.is_set():
+            raise TimeoutError('模型流式响应超过总时限') from error
+        raise
+    finally:
+        timer.cancel()
 
 
 def parse_json(text: str) -> dict:
@@ -142,7 +251,8 @@ class ModelClient:
         self.opener = urllib.request.build_opener(NoRedirect)
 
     def headers(self):
-        headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
+        headers = {'Content-Type': 'application/json',
+                   'Accept': 'text/event-stream' if self.config.stream else 'application/json'}
         names = dict(self.config.headers_env)
         if self.config.api_key_env:
             names['Authorization'] = self.config.api_key_env
@@ -160,12 +270,14 @@ class ModelClient:
     def complete(self, system: str, user: str) -> dict:
         if len(system) + len(user) > self.config.max_input_chars:
             raise ModelError('输入超过 max_input_chars，请按完整阶段拆分或调整上限')
-        body = {'model': self.config.model, 'stream': False, 'max_tokens': self.config.max_tokens,
+        body = {'model': self.config.model, 'stream': self.config.stream, 'max_tokens': self.config.max_tokens,
                 'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}]}
         if self.config.json_mode:
             body['response_format'] = {'type': 'json_object'}
         if self.config.temperature is not None:
             body['temperature'] = self.config.temperature
+        if self.config.reasoning_effort is not None:
+            body['reasoning_effort'] = self.config.reasoning_effort
         headers = self.headers()
         sensitive_values = [value for name, value in headers.items() if name.lower() not in ('content-type', 'accept')]
         sensitive_values += [value.removeprefix('Bearer ') for value in sensitive_values]
@@ -178,8 +290,11 @@ class ModelClient:
                 call['http_attempts'] += 1
                 try:
                     with self.opener.open(request, timeout=self.config.timeout) as response:
-                        data = response.read(8_000_001)
-                    if len(data) > 8_000_000:
+                        if self.config.stream:
+                            envelope = read_stream_completion(response, self.config.timeout)
+                        else:
+                            data = response.read(8_000_001)
+                    if not self.config.stream and len(data) > 8_000_000:
                         raise ModelError('模型响应超过 8 MB 上限')
                     break
                 except urllib.error.HTTPError as error:
@@ -197,7 +312,8 @@ class ModelClient:
                         raise ModelError('模型接口连接失败、响应中断或超时') from None
                     time.sleep(2 ** attempt)
             try:
-                envelope = json.loads(data)
+                if not self.config.stream:
+                    envelope = json.loads(data)
                 choice = envelope['choices'][0]
                 content = choice['message']['content']
                 usage = envelope.get('usage') or {}
