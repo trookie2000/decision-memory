@@ -87,7 +87,7 @@ MyFlicker 项目为 `2118968`，原会话为 `753893e84e614888ae35138b533065ad`�
 
 你是 decision-memory 项目的开发者兼调度者。用户希望由 MyFlicker 接替当前 Codex 会话，读取本地代码、执行命令、修改程序并验证结果。
 
-最终目标是完成[命题 07](https://docs.corp.kuaishou.com/d/home/fcABTQPLkKC9sABNQdKh0_0YG)：根据一个研发阶段的原始对话和最终产物，输出最终生效的决定、理由、适用边界及原文依据。
+最终目标是完成命题 07：根据一个研发阶段的原始对话和最终产物，输出最终生效的决定、理由、适用边界及原文依据。题面链接单独在内部交接材料中提供。
 
 用户已确定的协作方式：必须调用 Mario 中已创建的“命题7-出题人”和“命题7-评审人”，在指定 KIM 群展示各自回复，由本机程序自动派发和收取结果，再接上 decision-memory 的真实提取与评测。
 
@@ -98,7 +98,7 @@ MyFlicker 项目为 `2118968`，原会话为 `753893e84e614888ae35138b533065ad`�
 项目目录：`/Users/tianxupu/Pugna/decision-memory`。
 
 1. 全局和仓库说明文件（如存在），然后读 `README.md`。
-2. 最新[方案设计与验证文档](https://docs.corp.kuaishou.com/d/home/fcAAzKpiPx5sJ2P6GJHC5g_uH)。当前是六节正文、两张插图，不要重写成评分细则。其本地正文在 `runs/evaluation-plan-20261112/illustrated.md`。
+2. 最新方案设计与验证文档，内部链接单独提供。下面这份历史交接记录对应六节正文、两张插图，其本地正文在 `runs/evaluation-plan-20261112/illustrated.md`；接手时以最新内部文档为准。
 3. `docs/mario-kim-multiround.md`：已完成的实测与调用方式。
 4. `runs/mario-kim-probe-20261112/complete_round2.py`：自动交接的临时脚本，作为协议和流程参考。
 5. `decision_memory/cli.py`、`client.py`、`pipeline.py`、`sources.py`、`validation.py`、`evaluation.py`，以及相关测试。
@@ -222,7 +222,7 @@ pwd
 - `runs/mario-kim-probe-20261112/reviewer-r2-dispatch-receipt.json`：发送回执。
 - `runs/mario-kim-probe-20261112/S002/dialogue.md` 与 artifact.md：员工生成的两份输入。
 - `runs/mario-kim-probe-20261112/reviewer-v2-doc.md`：员工评审原文。其“第6轮用户澄清”定位有误，实际是第 7 条消息、文件第 15 行。
-- [历史出题结果](https://docs.corp.kuaishou.com/d/home/fcAAA0-ASnuhWOVmsqcSgoesh)与[历史评审结果](https://docs.corp.kuaishou.com/d/home/fcAAktjcbItAmCehUZrOezxZM)：仅供查证，新任务不覆盖。
+- 历史出题结果与历史评审结果：仅供查证，新任务不覆盖。内部链接见本地运行记录。
 
 data、runs、.venv 和 config.local.toml 被 Git 忽略，当前同一台电脑上有这些文件，不会自动出现在新的 GitHub 克隆中。
 

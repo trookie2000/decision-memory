@@ -35,7 +35,7 @@ flowchart LR
   DB -->|通过则结束；需修改则继续| C
 ```
 
-在本次入口中，MCP 发送的消息在 KIM 显示为“田旭浦通过 Mario 发送”，并实际触发了目标员工。这个结果只证明该入口有效，不能推广为任意机器人互相 @ 都能接力。[CF Remote Control 使用手册](https://docs.corp.kuaishou.com/d/home/fcAAeLcYQKKyNnqplfb3l3wz-)描述了 `/api/robot/send` 场景中机器人互相 @ 的限制。
+在本次入口中，MCP 发送的消息在 KIM 显示为当前用户通过 Mario 发送，并实际触发了目标员工。这个结果只证明该入口有效，不能推广为任意机器人互相 @ 都能接力。内部 CF Remote Control 使用手册描述了 `/api/robot/send` 场景中机器人互相 @ 的限制。
 
 当前 MCP 的 KIM 技能不支持读取群历史。两位群内员工也没有可用的 `handoff_external_agent` 工具。指定 Docs 文档提供了结果回传途径，这条实现路径不依赖它们读取群历史或调用本机 Handoff。
 
@@ -56,8 +56,8 @@ flowchart LR
 
 远端结果：
 
-- [出题人第二版](https://docs.corp.kuaishou.com/d/home/fcAAA0-ASnuhWOVmsqcSgoesh)
-- [评审人第二轮](https://docs.corp.kuaishou.com/d/home/fcAAktjcbItAmCehUZrOezxZM)
+- 出题人第二版，内部文档链接见本地运行记录。
+- 评审人第二轮，内部文档链接见本地运行记录。
 
 本地产物位于 `runs/mario-kim-probe-20261112/`：
 

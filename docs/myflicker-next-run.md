@@ -30,7 +30,7 @@ S008 首轮审题等待 600 秒无回传，同一真实评审员工的状态查�
 
 原批次恢复命令已实际执行，模型最小探针、Mario 发现和 Docs 只读预检通过。后台 PID `31658` 自动完成 S005、S006、S007，S004 保持原结果。S006 实际完成两轮出题审题及独立提取评分。当前前四个 case 均为 `agent_review_complete`，总计 19 条 items 全部获原员工肯定判定；这仍是 v1 Agent 初评，人工确认 pending。
 
-S008 已收到首轮出题，但 `r01-reviewer` 在 600 秒内未写入匹配完成结果，结果文档仍为等待占位。原批次现为 `blocked`、`finished=4/6`，PID `31658` 已退出，S009 尚未启动。具体错误和所有回执保留，不跳过 S008，不重复原派发。MyFlicker 已向同一真实评审员工发送一次仅核查状态的排障消息，要求区分进行中、已完成未写入和具体阻塞；诊断文档为 `https://docs.corp.kuaishou.com/d/home/fcAAkYedoZpPYNzYJeg2vnj39`，回执在 `runs/continuous-six-recovery-20261112/S008-r01-reviewer-status-inquiry/`。此查询不是重新审题或评分，结果尚待收取。
+S008 已收到首轮出题，但 `r01-reviewer` 在 600 秒内未写入匹配完成结果，结果文档仍为等待占位。原批次现为 `blocked`、`finished=4/6`，PID `31658` 已退出，S009 尚未启动。具体错误和所有回执保留，不跳过 S008，不重复原派发。MyFlicker 已向同一真实评审员工发送一次仅核查状态的排障消息，要求区分进行中、已完成未写入和具体阻塞；诊断文档链接与回执保存在 `runs/continuous-six-recovery-20261112/S008-r01-reviewer-status-inquiry/`。此查询不是重新审题或评分，结果尚待收取。
 
 原六 case 的逐项审计与当前汇总为 `runs/continuous-six-20261112/evaluation-summary.md` 和 `.json`；汇总脚本只读取已有数据，不发模型或员工请求。S007 原 v1 匹配为 3/5，但员工正文认可了未填入 matches 的理由参考，且额外评了 v1 不计入的 open_question；不改旧分数，不把 3/5 解释为漏提 40%。
 
@@ -44,7 +44,7 @@ S008 已收到首轮出题，但 `r01-reviewer` 在 600 秒内未写入匹配完
 
 MyFlicker 已实际排查员工侧故障并推进原批次，不再停留于上轮 0/6。
 
-真实评审员工在诊断文档 `https://docs.corp.kuaishou.com/d/home/fcADytqx6QMwduEeBL2lT-kuu` 返回：`completed_locally`、`input_readable=true`；评分已生成，失败在向原结果文档写入，关联临时文件不存在。根据该明确诊断，MyFlicker 只要求补交已有判定，不重算评分、不重新提取；省去 prediction／references 的重复回显，使用最小 result.json＋judgments.json。
+真实评审员工在诊断文档返回：`completed_locally`、`input_readable=true`；评分已生成，失败在向原结果文档写入，关联临时文件不存在。内部文档链接保存在本地运行记录中。根据该明确诊断，MyFlicker 只要求补交已有判定，不重算评分、不重新提取；省去 prediction／references 的重复回显，使用最小 result.json＋judgments.json。
 
 员工已成功将 8 条 judgments 写入原结果文档 `fcABS1MrYl5kFxMMMvma5GYG-`，原任务身份、prediction_digest 和 task_input_digest 均匹配。S004 现为 `agent_review_complete`，原提取仍只有 attempt-01，受保护的输入、参考、原预测和旧回执均未改，S003 不变。原有 v1 初评为 8/8 正确、8/8 引用支持、参考匹配 4/5，尚待人工确认，不作正式分数。
 
@@ -60,8 +60,8 @@ MyFlicker 已实际排查员工侧故障并推进原批次，不再停留于上�
 
 消息过大修复已实现并实测发送成功：完整任务要求、对话、产物、参考和原始预测放入独立 Docs 待执行任务输入，KIM 通知从 22099 字节降为 1130 字节。输入文档不是员工评分结果，不修改原始预测、参考或结果文档。默认通知保护限制为项目自行设定的 4000 UTF-8 字节，不代表平台上限。
 
-- Docs 任务输入：`https://docs.corp.kuaishou.com/d/home/fcABZF8_llhUE6-sLnlb-OUTb`。
-- 原结果文档：`https://docs.corp.kuaishou.com/d/home/fcABS1MrYl5kFxMMMvma5GYG-`，继续保留。
+- Docs 任务输入：内部文档链接见本地运行记录。
+- 原结果文档：继续保留，内部链接见本地运行记录。
 - 成功消息：`OMSG_BAAAAFTzjakLYAYAVKnvteBeBgBryDxwuSMBABYQKzP6WxoA`。
 - 沿用 S004 评分操作线程 `949848163681570893`，新派发 taskId 为 `949855919016788037`。
 - 回执、原状态快照、任务输入与结果身份绑定均在 `cases/S004/operations/score-a01/delivery-recovery-01/`；原失败回执未删。
@@ -100,7 +100,7 @@ S004 只有原 attempt-01：8 条预测、2 条 open_questions、输入 2764 tok
 
 S004 评分任务的 KIM 正文为 22099 字节。原回执明确报告错误码 `82000`、`MESSAGE_TOO_LARGE_TO_SEND`，未返回 messageKey。原回执为 `cases/S004/operations/score-a01/dispatch-receipt.json`。
 
-等待评分结果的文档为 `https://docs.corp.kuaishou.com/d/home/fcABS1MrYl5kFxMMMvma5GYG-`。已有预测、参考、输入摘要与结果文档都要保留。不要重跑 S004 提取，不要删除原回执或改写原始预测。
+等待评分结果的内部文档链接见本地运行记录。已有预测、参考、输入摘要与结果文档都要保留。不要重跑 S004 提取，不要删除原回执或改写原始预测。
 
 ## 接下来由 MyFlicker 执行
 

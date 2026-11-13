@@ -38,7 +38,7 @@ uv pip install --python .venv/bin/python -e .
 .venv/bin/decision-memory --help
 ```
 
-本机已将题面附件保存到 `data/public-samples.zip`，该目录被 Git 忽略。其他机器可从命题文档下载同名自测 ZIP，或传入解压后的目录。程序识别每个需求下 `上下文/需求确认记录.md` 与 `产物/需求分析.md`，以及 `上下文/技术设计确认记录.md` 与 `产物/技术方案.md`。每对文件形成一条输入。 [题面与附件](https://docs.corp.kuaishou.com/d/home/fcABTQPLkKC9sABNQdKh0_0YG)
+本机已将题面附件保存到 `data/public-samples.zip`，该目录被 Git 忽略。其他机器可从命题文档下载同名自测 ZIP，或传入解压后的目录。程序识别每个需求下 `上下文/需求确认记录.md` 与 `产物/需求分析.md`，以及 `上下文/技术设计确认记录.md` 与 `产物/技术方案.md`。每对文件形成一条输入。题面附件请从内部材料获取。
 
 ## 配置模型网关
 
@@ -64,7 +64,7 @@ api_key_env = ""
 headers_env = { "x-token" = "MYTOKEN_APP_TOKEN", "x-username" = "MYTOKEN_USERNAME" }
 ```
 
-Mytoken 相关接入文档展示了自定义请求头的 Chat Completions 接口。本项目需要使用自身获准的入口和凭证，具体可用模型以该入口为准。旧万擎项目曾因服务树配置缺失返回 HTTP 402，后续已切换至另一个获准使用的部门项目并完成一次真实提取。 [网关接入示例](https://docs.corp.kuaishou.com/k/home/VO3BfBo2j_yo/fcABReDQV8PmNdInB0VjDgaAv)
+Mytoken 相关接入文档展示了自定义请求头的 Chat Completions 接口。本项目需要使用自身获准的入口和凭证，具体可用模型以该入口为准。旧万擎项目曾因服务树配置缺失返回 HTTP 402，后续已切换至另一个获准使用的部门项目并验证真实提取。网关调用方法请参考组织内部接入说明。
 
 HTTP 错误会显示网关返回的错误码、说明和请求 ID，并屏蔽配置中的凭证。HTTP 402 的具体原因以网关说明为准。修正配置后，可使用 `batch --resume` 重试失败样本。
 

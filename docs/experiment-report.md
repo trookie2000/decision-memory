@@ -82,7 +82,7 @@ S004 仍为原一次提取（8 条 items、2 条 open_questions）；S003 不变
 
 原始输出位于 `runs/mario-battle-20261112-S003/extraction/attempt-07/prediction.json`，可读版本为同目录的 `prediction.md`。CLI 未接收候选参考答案，评分工作表绑定原始输出和已固定的参考摘要。
 
-程序首次派发 `score-a07` 时，Mario 派发助手只返回感叹号串，没有 messageKey。用户随后确认群内未收到任务。保留原回执后，使用新的派发会话向原评审员工补发同一评分任务，沿用原文档、输入版本、完成标记、预测和参考答案。补发取得真实消息回执，员工回传 [评分结果](https://docs.corp.kuaishou.com/d/home/fcACkjsTkappn83888dk-kzM_)，任务达到 `agent_review_complete`。这是经用户确认未送达后的操作恢复，不是原协调器自动重发。
+程序首次派发 `score-a07` 时，Mario 派发助手只返回感叹号串，没有 messageKey。用户随后确认群内未收到任务。保留原回执后，使用新的派发会话向原评审员工补发同一评分任务，沿用原文档、输入版本、完成标记、预测和参考答案。补发取得真实消息回执，员工回传评分结果，任务达到 `agent_review_complete`。结果文档链接保存在本地运行记录中。这是经用户确认未送达后的操作恢复，不是原协调器自动重发。
 
 程序保存的 Agent 初评为 3 条正确、3 条引用支持，参考覆盖 4/5。第 5 条参考是“2 秒间隔的理由未说明”，已出现在原始预测的 open_questions 中。评审正文也判该项正确，但现有计分只处理 items 对应的 judgments，未计入 open_questions。80% 是当前程序的条目匹配结果，不能直接解释成模型漏提 20%。候选参考粒度和未决事项的评测口径仍需核对。
 
@@ -98,10 +98,10 @@ S004 仍为原一次提取（8 条 items、2 条 open_questions）；S003 不变
 
 | 操作 | 实际回传 | 新建结果文档 |
 |---|---|---|
-| 首轮出题 | 完整 dialogue/artifact/gold | [出题 r1](https://docs.corp.kuaishou.com/d/home/fcAA_WcxqPv51SlBfF9Ozg1-k) |
-| 首轮审题 | needs_revision，要求落实新增合成重试条件 | [评审 r1](https://docs.corp.kuaishou.com/d/home/fcAAJl2uUO4J5ElH2v0I6ZRsQ) |
-| 第二轮出题 | 按真实反馈返回完整新版 | [出题 r2](https://docs.corp.kuaishou.com/d/home/fcADjhQV3W0RaCQxOEl9QoLDm) |
-| 第二轮审题 | passed（仅 Agent 初评） | [评审 r2](https://docs.corp.kuaishou.com/d/home/fcACEv5Iwk3FvYhZuWWFAo9w3) |
+| 首轮出题 | 完整 dialogue/artifact/gold | 出题 r1，链接见本地运行记录 |
+| 首轮审题 | needs_revision，要求落实新增合成重试条件 | 评审 r1，链接见本地运行记录 |
+| 第二轮出题 | 按真实反馈返回完整新版 | 出题 r2，链接见本地运行记录 |
+| 第二轮审题 | passed（仅 Agent 初评） | 评审 r2，链接见本地运行记录 |
 
 进程曾因 Docs 导出将完成标记转义为 `DM\\_DONE` 而等待到超时。修复后实际使用 `resume` 收取已有结果、自动推进下一员工，没有重发首轮。消息 ID 里实际出现 `/` 和 `+`，解析已修复并回归测试。未知发送和未知创建不自动重试；原回执、状态、材料均保留。
 
