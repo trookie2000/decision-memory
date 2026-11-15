@@ -4,6 +4,7 @@ import json
 import http.client
 import math
 import os
+import re
 import socket
 import threading
 import time
@@ -188,17 +189,37 @@ def read_stream_completion(response, timeout):
         timer.cancel()
 
 
-def parse_json(text: str) -> dict:
+TRAILING_COMMA = re.compile(r',(\s*[}\]])')
+
+
+def json_candidates(text: str):
+    """Yield progressively more lenient views of a model reply; never invent content."""
     text = text.strip()
+    yield text
     if text.startswith('```') and text.endswith('```'):
-        text = '\n'.join(text.splitlines()[1:-1])
-    try:
-        result = json.loads(text)
-    except json.JSONDecodeError as error:
-        raise ModelOutputError('模型未返回完整 JSON，请缩小输出或提高 max_tokens') from error
-    if not isinstance(result, dict):
-        raise ModelOutputError('模型 JSON 顶层必须是对象')
-    return result
+        text = '\n'.join(text.splitlines()[1:-1]).strip()
+        yield text
+    start, end = text.find('{'), text.rfind('}')
+    if 0 <= start < end:
+        # Prose before/after the object, or a fence that is not at the very start.
+        text = text[start:end + 1]
+        yield text
+    yield TRAILING_COMMA.sub(r'\1', text)
+
+
+def parse_json(text: str) -> dict:
+    error = None
+    for candidate in json_candidates(text):
+        try:
+            # strict=False accepts raw control characters (tabs/newlines) copied into strings.
+            result = json.loads(candidate, strict=False)
+        except json.JSONDecodeError as caught:
+            error = caught
+            continue
+        if not isinstance(result, dict):
+            raise ModelOutputError('模型 JSON 顶层必须是对象')
+        return result
+    raise ModelOutputError('模型未返回完整 JSON，请缩小输出或提高 max_tokens') from error
 
 
 def http_error_message(error, sensitive_values) -> str:

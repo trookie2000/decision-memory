@@ -12,3 +12,4 @@ dist/
 config.local.toml
 data/
 runs/
+*.local.toml

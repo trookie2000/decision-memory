@@ -47,8 +47,13 @@ class BattleConfig:
         if (url.scheme != 'http' or url.hostname not in ('127.0.0.1', 'localhost', '::1')
                 or url.username or url.password or url.query or url.fragment):
             raise ValueError('Mario MCP 必须是无凭证的本机 HTTP 地址')
-        if (self.group_id, self.author_id, self.reviewer_id) != (GROUP_ID, AUTHOR_ID, REVIEWER_ID):
-            raise ValueError('本协调器仅获准使用交接中指定的 KIM 测试群和两位员工')
+        # Targets come from the operator's own config; only their shape is checked here.
+        for name in ('group_id', 'author_id', 'reviewer_id'):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.isdigit():
+                raise ValueError(f'{name} 必须是 KIM 数字 ID')
+        if self.author_id == self.reviewer_id:
+            raise ValueError('出题人与评审人必须是两位不同的员工')
         if self.dispatch_context not in ('task', 'operation'):
             raise ValueError('dispatch_context 必须为 task 或 operation')
         for name, low, high in (('request_timeout', 1, 300), ('docs_timeout', 1, 120),

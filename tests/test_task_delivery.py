@@ -169,6 +169,27 @@ class TaskDeliveryTests(unittest.TestCase):
             battle.run(0)
         self.assertEqual(len(self.mario.sent), 0)
 
+    def test_transient_readback_corruption_recreates_input_once_then_sends(self):
+        battle = self.new('large data 中文 ' * 1000)
+        original_fetch = self.docs.fetch
+        corrupted = []
+
+        def corrupt_first_input(doc_id):
+            response = original_fetch(doc_id)
+            if '## task.json' in response['content'] and not corrupted:
+                corrupted.append(doc_id)
+                response['content'] = response['content'].replace('large data', 'large d\ufffdta', 1)
+            return response
+
+        self.docs.fetch = corrupt_first_input
+        battle.run(0)
+        self.assertEqual(len(self.mario.sent), 1)
+        task_input = battle.state['operations']['r01-author']['task_input']
+        self.assertEqual([doc['doc_id'] for doc in task_input['corrupted']], corrupted)
+        self.assertNotEqual(task_input['document']['doc_id'], corrupted[0])
+        self.assertTrue(task_input['base'].endswith('input-retry-01'))
+        self.assertIn('\\u4e2d', (self.root / task_input['base'] / 'task-input.md').read_text())
+
     def test_explicit_rejection_recovery_preserves_original_and_sends_once(self):
         self.mario.complete_immediately = False
         self.mario.receipt = refusal

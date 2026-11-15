@@ -41,8 +41,12 @@ def task_packet(op, stage, payload, request):
             'request': request, 'payload': payload}
 
 
-def render_task(packet):
-    body = json.dumps(packet, ensure_ascii=False, indent=2)
+MAX_INPUT_RECREATES = 2
+
+
+def render_task(packet, ascii_only=False):
+    # ASCII escapes avoid a Docs write path that occasionally corrupts multi-byte characters.
+    body = json.dumps(packet, ensure_ascii=ascii_only, indent=2)
     # Safely nest arbitrary source Markdown/backticks inside the JSON data fence.
     fence = '~' * max(3, 1 + max((len(part) for part in re.findall(r'~+', body)), default=0))
     content = ('# 待执行任务输入（不是员工评分结果）\n\n'
@@ -98,14 +102,14 @@ class DocumentDelivery:
         payload = read_json(battle.path(f'operations/{op["key"]}/payload.json'))
         packet = task_packet(op, battle.state['stage'], payload, request)
         if not op.get('task_input'):
-            op['task_input'] = {'create': 'new', 'base': base, 'digest': digest(packet)}
+            op['task_input'] = {'create': 'new', 'base': base, 'digest': digest(packet), 'ascii': True}
             battle.save()
         current = op['task_input']
         if current['digest'] != digest(packet):
             raise ValueError('Docs 待执行任务版本发生变化')
         base = current['base']
         battle.put_json(base + '/task-packet.json', packet)
-        battle.put_text(base + '/task-input.md', render_task(packet))
+        battle.put_text(base + '/task-input.md', render_task(packet, current.get('ascii', False)))
         receipt_path = battle.path(base + '/task-input-create-receipt.json')
         if not current.get('document'):
             if not receipt_path.exists() and current['create'] == 'new':
@@ -130,7 +134,22 @@ class DocumentDelivery:
                 battle.save()
                 return None
         fetched = battle.docs.fetch(current['document']['doc_id'])
-        verify_task(fetched['content'], packet)
+        try:
+            verify_task(fetched['content'], packet)
+        except ValueError:
+            # Nothing has been sent yet: the notification is built only after a matching
+            # readback. Keep the corrupted copy for audit and create a fresh input document.
+            corrupted = current.get('corrupted', [])
+            if len(corrupted) >= MAX_INPUT_RECREATES:
+                raise
+            battle.put_text(base + '/task-input-readback-mismatch.md', fetched['content'])
+            retry_base = f'operations/{op["key"]}/input-retry-{len(corrupted) + 1:02d}'
+            op['task_input'] = {'create': 'new', 'base': retry_base, 'digest': current['digest'], 'ascii': True,
+                                'corrupted': corrupted + [current['document']]}
+            battle.save()
+            battle.event('task_input_recreate', operation=op['key'], corrupted_doc=current['document']['doc_id'],
+                         attempt=len(corrupted) + 1)
+            return self.prepare(op, request, force=force)
         if not battle.path(base + '/task-input-readback.md').exists():
             battle.put_text(base + '/task-input-readback.md', fetched['content'])
         current['last_capture'] = fetched.get('capture')

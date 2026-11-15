@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 import zipfile
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 MAX_FILE_BYTES = 2_000_000
@@ -12,7 +12,8 @@ STAGES = {
     'analysis': ('需求确认记录.md', '需求分析.md'),
     'design': ('技术设计确认记录.md', '技术方案.md'),
 }
-ROLE = re.compile(r'^\s*\*\*(?:AGENT|用户|assistant|user)\s*[:：]?\*\*', re.I)
+ROLE = re.compile(r'^\s*\*\*(AGENT|用户|assistant|user)\s*[:：]?\*\*', re.I)
+ROLE_NAMES = {'agent': 'agent', 'assistant': 'agent', '用户': 'user', 'user': 'user'}
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,7 @@ class Source:
     line: int
     message: int | None
     text: str
+    role: str | None = None
 
 
 @dataclass
@@ -33,9 +35,14 @@ class Sample:
     file_hashes: dict[str, str]
 
     def prompt_text(self, artifact_only: bool = False) -> str:
-        sources = [asdict(source) for source in self.catalog.values()
+        # role tells the model who said a line: user confirmation vs. agent proposal vs. final artifact.
+        files = {prefix: source.file for source in self.catalog.values() for prefix in source.source_id[:1]}
+        sources = [{'source_id': source.source_id, 'role': source.role, 'message': source.message,
+                    'text': source.text}
+                   for source in self.catalog.values()
                    if not artifact_only or source.source_id.startswith('A')]
-        return json.dumps({'stage': self.stage, 'sources': sources}, ensure_ascii=False)
+        return json.dumps({'stage': self.stage, 'files': {'D': files.get('D'), 'A': files.get('A')},
+                           'sources': sources}, ensure_ascii=False)
 
 
 def make_sample(dialogue: str, artifact: str, stage: str, sample_id: str = 'sample',
@@ -48,13 +55,14 @@ def make_sample(dialogue: str, artifact: str, stage: str, sample_id: str = 'samp
         raise ValueError('单份材料超过 2 MB 输入上限')
     catalog = {}
     for prefix, name, text in (('D', dialogue_name, dialogue), ('A', artifact_name, artifact)):
-        message = 0
+        message, role = 0, None if prefix == 'D' else 'artifact'
         for number, line in enumerate(text.removeprefix('\ufeff').splitlines(), 1):
-            if prefix == 'D' and ROLE.match(line):
+            if prefix == 'D' and (match := ROLE.match(line)):
                 message += 1
+                role = ROLE_NAMES[match[1].lower()]
             if line.strip():
                 source_id = f'{prefix}{number:05d}'
-                catalog[source_id] = Source(source_id, name, number, message or None, line)
+                catalog[source_id] = Source(source_id, name, number, message or None, line, role)
     fingerprint = hashlib.sha256(json.dumps(
         [stage, dialogue_name, dialogue, artifact_name, artifact], ensure_ascii=False
     ).encode()).hexdigest()

@@ -59,9 +59,40 @@ def parser():
     refs.add_argument('--sample-id', required=True)
     refs.add_argument('--references', required=True, type=Path)
     refs.add_argument('--output', type=Path)
+    official = commands.add_parser('official', help='用官方评测标注按比赛口径自测（只用于评测，不进入提取）')
+    official_commands = official.add_subparsers(dest='official_command', required=True)
+    refs = official_commands.add_parser('refs', help='离线解析评测标注，输出每个需求的正向/过程参考数量')
+    refs.add_argument('--dataset', required=True, type=Path)
+    refs.add_argument('--output', type=Path)
+    official_score = official_commands.add_parser('score', help='用评分模型给一批提取结果打分')
+    official_score.add_argument('--dataset', required=True, type=Path)
+    official_score.add_argument('--predictions', required=True, type=Path, help='batch 输出目录')
+    official_score.add_argument('--config', required=True, type=Path, help='评分模型配置')
+    official_score.add_argument('--scope', choices=('requirement', 'stage'), default='requirement')
+    official_score.add_argument('--output', required=True, type=Path, help='新的评分输出目录')
     add_battle_arguments(commands)
     add_series_arguments(commands)
     return root
+
+
+def run_official(args):
+    from . import official_eval
+    if args.official_command == 'refs':
+        references = official_eval.load_references(args.dataset)
+        summary = {name: {'positives': [ref['id'] for ref in value['positives']],
+                          'negatives': [ref['id'] for ref in value['negatives']]}
+                   for name, value in references.items()}
+        if args.output:
+            write_json(args.output, references)
+        return summary, 0
+    if args.output.exists() and any(args.output.iterdir()):
+        raise ValueError('评分输出目录已有内容，请使用新目录')
+    report = official_eval.evaluate(args.dataset, args.predictions, ModelClient(Config.load(args.config)), args.scope)
+    write_json(args.output / 'report.json', report)
+    write_text(args.output / 'report.md', official_eval.render_report(report))
+    return {'output': str(args.output), 'total': {key: report['total'][key] for key in
+            ('recall', 'recall_strict', 'precision', 'citation_support_rate', 'citation_sample',
+             'projected_points')}}, 0
 
 
 def add_series_arguments(commands):
@@ -249,6 +280,8 @@ def batch_extract(args):
 def run(args):
     if args.command == 'series':
         return run_series(args)
+    if args.command == 'official':
+        return run_official(args)
     if args.command == 'battle':
         return run_battle(args)
     if args.command == 'inspect':

@@ -2,6 +2,8 @@
 
 from .sources import Sample
 
+KINDS = ('decision', 'correction', 'constraint', 'contract', 'metric', 'fallback', 'scope', 'implicit')
+
 
 def validate_evidence(evidence: object, sample: Sample, location: str) -> list[dict]:
     if not isinstance(evidence, list):
@@ -48,6 +50,11 @@ def validate_result(payload: object, sample: Sample) -> dict:
         if not isinstance(item, dict):
             raise ValueError('条目必须是对象')
         entry = {'id': f'K{index:03d}'}
+        kind = item.get('kind')
+        if kind is not None:
+            if kind not in KINDS:
+                raise ValueError(f'items[{index}].kind 只能为 ' + '/'.join(KINDS))
+            entry['kind'] = kind
         for name in ('conclusion', 'reason', 'boundary'):
             entry[name] = validate_field(item.get(name), sample, f'items[{index}].{name}', name == 'conclusion')
         identity = tuple(entry[name]['text'] for name in ('conclusion', 'reason', 'boundary'))

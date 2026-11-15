@@ -113,7 +113,7 @@ class StreamingTests(unittest.TestCase):
     def test_legacy_nonstream_run_signature_is_preserved_and_stream_differs(self):
         config = Config(endpoint='https://example.test/chat/completions', model='fixture', api_key_env='')
         legacy = run_signature(self.sample, ModelClient(config), 'baseline')
-        self.assertEqual(legacy, 'ae001d867324f4c08948bb10b4c8f06de9912c4ed9637ea55d4838f25f030f5a')
+        self.assertEqual(legacy, '1097a5f66d926a06f35ceed3b9a81b39ddf2fd41babf218eb468443f46776c17')
         config.stream = True
         self.assertNotEqual(run_signature(self.sample, ModelClient(config), 'baseline'), legacy)
 

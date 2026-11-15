@@ -3,6 +3,22 @@
 import hashlib
 import json
 import copy
+import re
+
+MARKDOWN_NOISE = re.compile(r'\*\*|__|`|^\s*(?:[-*+>]|#{1,6}|\d+[.、])\s+', re.M)
+
+
+SPEAKER = re.compile(r'^\s*(?:\*\*)?\s*(?:AGENT|用户|assistant|user)\s*[:：]\s*(?:\*\*)?', re.I)
+
+
+def plain(text):
+    """Rendered view of a Markdown line: drop emphasis/list markers and all whitespace.
+
+    Reference authors often quote what they see rendered ("用户：…") rather than the raw
+    Markdown ("**用户：** …"). Only reference checking uses this; extraction citations
+    stay strictly verbatim.
+    """
+    return re.sub(r'\s+', '', MARKDOWN_NOISE.sub('', text))
 
 
 def digest(value):
@@ -25,8 +41,11 @@ def validate_references(references, sample):
                 raise ValueError('参考证据的 source 只能为 dialogue/artifact')
             prefix = 'D' if item['source'] == 'dialogue' else 'A'
             quote = item.get('quote')
-            if not isinstance(quote, str) or not quote.strip() or not any(
-                    key.startswith(prefix) and quote in source.text for key, source in sample.catalog.items()):
+            # A leading speaker label on a mid-message fragment is metadata, not quoted text.
+            needle = plain(SPEAKER.sub('', quote)) if isinstance(quote, str) else ''
+            if not needle or not any(
+                    key.startswith(prefix) and needle in plain(source.text)
+                    for key, source in sample.catalog.items()):
                 raise ValueError('参考答案存在无法在对应原文行中找到的引文')
     return references
 
