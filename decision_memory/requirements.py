@@ -80,8 +80,10 @@ def load_requirement_manifest(path: Path) -> RequirementSample:
     if not isinstance(value['nodes'], list) or not 1 <= len(value['nodes']) <= MAX_NODES:
         raise ValueError('需求需要 1～64 个节点')
     root = path.parent.resolve()
+    total = 0
 
     def material(name):
+        nonlocal total
         if not isinstance(name, str) or not name.strip():
             raise ValueError('材料路径必须为相对路径')
         relative = Path(name)
@@ -89,7 +91,11 @@ def load_requirement_manifest(path: Path) -> RequirementSample:
         if (relative.is_absolute() or '..' in relative.parts or not target.is_relative_to(root)
                 or '评测标注' in relative.parts):
             raise ValueError('材料路径不能越出清单目录或读取评测标注')
-        return relative.as_posix(), read_text(target)
+        text = read_text(target)
+        total += len(text.encode('utf-8'))
+        if total > MAX_REQUIREMENT_BYTES:
+            raise ValueError('整个需求超过 8 MB 输入上限')
+        return relative.as_posix(), text
 
     nodes = []
     for node in value['nodes']:

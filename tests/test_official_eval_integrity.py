@@ -3,6 +3,7 @@ import copy
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from decision_memory.official_eval import metrics, validate_judgment
@@ -79,6 +80,22 @@ class JudgmentIntegrityTests(unittest.TestCase):
                 payload = self.payload()
                 payload[section][0]['notes'] = ' '
                 self.validate(payload)
+
+    def test_non_string_ids_are_validation_errors(self):
+        for section, field in (('items', 'item_id'), ('positives', 'ref_id')):
+            for invalid in ([], {}):
+                with self.subTest(section=section, value=invalid), self.assertRaises(ValueError):
+                    payload = self.payload()
+                    payload[section][0][field] = invalid
+                    self.validate(payload)
+
+    def test_content_validity_without_supported_citations_does_not_add_coverage(self):
+        payload = self.payload()
+        payload['items'][0].update(matches=[], citation_support=False)
+        payload['positives'][0].update(coverage='missing', items=[])
+        result = metrics([self.validate(payload)])
+        self.assertEqual(result['precision'], 0.5)
+        self.assertEqual(result['recall'], 0)
 
     def test_strict_recall_determines_projected_points(self):
         judgment = {
@@ -167,6 +184,34 @@ class OfficialPredictionIntegrityTests(unittest.TestCase):
             report = official_eval.evaluate(dataset, output, FakeClient([self.judgment('requirement')]))
         self.assertEqual(list(report['requirements']), ['REQ-one'])
         self.assertEqual(report['total']['recall'], 0.5)
+
+    def test_batch_cannot_mix_granularity_across_different_requirements(self):
+        from decision_memory.requirements import discover_requirements
+        from decision_memory.requirement_pipeline import extract_requirement
+        with tempfile.TemporaryDirectory() as directory:
+            dataset, output = self.predictions(directory)
+            sample = discover_requirements(dataset, 'REQ-two')[0]
+            result = extract_requirement(sample, FakeClient([{'events': [], 'open_questions': []}]), 'baseline')
+            save_result(output / 'REQ-two.json', result)
+            judge = FakeClient([])
+            with self.assertRaisesRegex(ValueError, '粒度'):
+                official_eval.evaluate(dataset, output, judge)
+            self.assertEqual(judge.prompts, [])
+
+    def test_missing_reference_for_any_requirement_fails_before_the_first_judge_call(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dataset, output = self.predictions(directory)
+            prefix = 'rules/requirements/REQ-zzz'
+            with zipfile.ZipFile(dataset, 'a') as archive:
+                archive.writestr(prefix + '/上下文/需求确认记录.md', '**用户：**\n虚构规则。')
+                archive.writestr(prefix + '/产物/需求分析.md', '虚构规则。')
+            sample = discover_samples(dataset, requirement_id='REQ-zzz')[0]
+            result = extract(sample, FakeClient([{'items': [], 'open_questions': []}]), 'baseline')
+            save_result(output / (sample.sample_id + '.json'), result)
+            judge = FakeClient([])
+            with self.assertRaisesRegex(ValueError, '标注'):
+                official_eval.evaluate(dataset, output, judge)
+            self.assertEqual(judge.prompts, [])
 
 
 if __name__ == '__main__':

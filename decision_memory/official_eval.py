@@ -183,7 +183,8 @@ def validate_judgment(payload, item_ids, positive_ids):
             raise ValueError('评分判断必须有非空 notes 说明')
 
     for row in payload['items']:
-        if not isinstance(row, dict) or row.get('item_id') not in item_ids:
+        if (not isinstance(row, dict) or not isinstance(row.get('item_id'), str)
+                or row['item_id'] not in item_ids):
             raise ValueError('评分 items 含未知 item_id')
         if row['item_id'] in seen:
             raise ValueError('评分 items 含重复 item_id')
@@ -200,7 +201,8 @@ def validate_judgment(payload, item_ids, positive_ids):
         raise ValueError('评分 items 必须与预测逐条对应')
     coverage = {}
     for row in payload['positives']:
-        if not isinstance(row, dict) or row.get('ref_id') not in positive_ids or row.get('coverage') not in COVERAGE:
+        if (not isinstance(row, dict) or not isinstance(row.get('ref_id'), str)
+                or row['ref_id'] not in positive_ids or row.get('coverage') not in COVERAGE):
             raise ValueError('positives 含未知 ref_id 或无效 coverage')
         if row['ref_id'] in coverage:
             raise ValueError('positives 含重复 ref_id')
@@ -302,6 +304,8 @@ def validated_inputs(dataset, predictions, scope):
     from .requirements import discover_requirements
     from .sources import STAGES, discover_samples
     from .storage import validate_saved
+    if len({prediction.get('scope') == 'requirement' for prediction in predictions}) > 1:
+        raise ValueError('同一评分批次不能混合需求级与阶段级预测粒度')
     grouped, sources, bindings = {}, {}, []
     for prediction in predictions:
         if prediction.get('scope') == 'requirement':
@@ -384,10 +388,11 @@ def evaluate(dataset: Path, predictions_dir: Path, client, scope='requirement'):
         raise ValueError('评分 scope 只能为 requirement 或 stage')
     references = load_references(dataset)
     grouped, sources, bindings = validated_inputs(dataset, load_predictions(predictions_dir), scope)
+    missing_references = set(grouped) - set(references)
+    if missing_references:
+        raise ValueError('标注中没有需求 ' + ', '.join(sorted(missing_references)))
     judgments, per_requirement = {}, {}
     for requirement, predictions in sorted(grouped.items()):
-        if requirement not in references:
-            raise ValueError(f'标注中没有需求 {requirement}')
         if scope == 'requirement':
             judgment = judge_requirement(client, references[requirement], predictions, source_materials=sources[requirement])
             judgments[requirement] = [judgment]

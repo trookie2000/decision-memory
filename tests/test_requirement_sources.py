@@ -114,6 +114,24 @@ class RequirementSourceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '64'):
                 load_requirement_manifest(path)
 
+    def test_total_size_limit_stops_reading_later_nodes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'manifest.json'
+            path.write_text(json.dumps({'schema_version': 1, 'requirement_id': 'DEMO', 'nodes': [
+                {'id': f'N{i}', 'stage': 'test', 'dialogue': f'd{i}.md', 'artifact': f'a{i}.md'}
+                for i in range(5)]}))
+            opened = []
+
+            def read_material(target):
+                opened.append(target.name)
+                if len(opened) > 8:
+                    self.fail('读入已超限的材料后，仍继续读取后续节点')
+                return 'x' * 1_000_001
+
+            with patch('decision_memory.requirements.read_text', read_material):
+                with self.assertRaisesRegex(ValueError, '8 MB'):
+                    load_requirement_manifest(path)
+
     def test_selected_dataset_requirement_does_not_read_other_inputs_or_annotations(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'samples.zip'
