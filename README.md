@@ -1,10 +1,12 @@
 # Decision Memory
 
-面向命题 07 的本地 CLI。读取一个研发阶段的完整对话和最终产物，输出最终有效决策、理由、适用边界及逐字段原文证据。
+面向命题 07 的本地 CLI。读取完整需求的有序节点，输出当前有效决策、理由、适用边界及逐字段原文证据，并保留更新和失效历史。也支持独立处理一个研发阶段。
 
 Python 3.11+。运行时仅使用标准库。默认输出 JSON 和 Markdown，可供下一阶段 Agent 读取。
 
 ## 当前验证范围
+
+新增 `requirement inspect/extract/validate`，可通过清单读取分析、设计、编码等节点，或组合现有数据集中的分析与设计材料。需求级 `verified` 正常调用 2 次模型；旧阶段流程保持原行为。虚构示例、操作说明和后续质量验证方法见 [完整需求提取](docs/requirement-memory.md)。新增功能已做自动化验证，真实模型效果待独立实验确认。
 
 2026-11-13，原 S004～S009 批次已完成 6/6。两位真实 Mario 员工完成出题、审题和评分，CLI 独立调用 Kimi 提取。S006、S008 经两轮修订。共保存 28 条决策和 8 条未决项；28 条决策均获员工肯定初评，人工确认仍待完成。逐例记录见本机 `runs/continuous-six-20261112/evaluation-summary.md`。
 
@@ -71,6 +73,13 @@ HTTP 错误会显示网关返回的错误码、说明和请求 ID，并屏蔽配
 `json_mode` 默认关闭，确认网关支持后可开启。`temperature` 默认不发送。费用单价可配置为每百万输入和输出 token 的价格，未配置时 `estimated_cost` 为 `null`。估算按照标准输入/输出价格计算，缓存优惠、平台积分和失败调用计费以网关账单为准。
 
 ## 提取和比较
+
+处理完整需求，先运行虚构示例的离线检查。提取、校验及数据集用法见 [完整需求提取](docs/requirement-memory.md)。
+
+```bash
+python3 -m decision_memory requirement inspect \
+  --manifest examples/requirement-cache/manifest.json
+```
 
 只运行一个官方阶段，不读取其他阶段正文或评测标注：
 

@@ -16,7 +16,7 @@ from .storage import read_json, render_markdown, save_result, validate_saved, wr
 
 
 def parser():
-    root = argparse.ArgumentParser(prog='decision-memory', description='研发阶段决策提取与证据核查')
+    root = argparse.ArgumentParser(prog='decision-memory', description='研发阶段与完整需求的知识提取及证据核查')
     commands = root.add_subparsers(dest='command', required=True)
     inspect = commands.add_parser('inspect', help='离线检查官方 ZIP 或目录的阶段输入')
     inspect.add_argument('--dataset', required=True, type=Path)
@@ -70,9 +70,63 @@ def parser():
     official_score.add_argument('--config', required=True, type=Path, help='评分模型配置')
     official_score.add_argument('--scope', choices=('requirement', 'stage'), default='requirement')
     official_score.add_argument('--output', required=True, type=Path, help='新的评分输出目录')
+    add_requirement_arguments(commands)
     add_battle_arguments(commands)
     add_series_arguments(commands)
     return root
+
+
+def add_requirement_arguments(commands):
+    command = commands.add_parser('requirement', help='按有序节点提取完整需求，保存知识更新与失效记录')
+    actions = command.add_subparsers(dest='requirement_command', required=True)
+    for action in ('inspect', 'extract', 'validate'):
+        leaf = actions.add_parser(action)
+        source = leaf.add_mutually_exclusive_group(required=True)
+        source.add_argument('--manifest', type=Path, help='显式列出有序节点的 JSON 清单')
+        source.add_argument('--dataset', type=Path, help='官方 ZIP 或目录，不读取评测标注')
+        leaf.add_argument('--requirement-id', help='数据集中的需求目录名')
+        if action == 'extract':
+            add_model_arguments(leaf)
+            leaf.add_argument('--output', required=True, type=Path)
+        elif action == 'inspect':
+            leaf.add_argument('--output', type=Path)
+        else:
+            leaf.add_argument('--result', required=True, type=Path)
+
+
+def run_requirement(args):
+    from .requirements import discover_requirements, load_requirement_manifest
+    from .requirement_pipeline import extract_requirement
+    if args.manifest and args.requirement_id:
+        raise ValueError('--manifest 不能同时传 --requirement-id')
+    action = args.requirement_command
+    saved = read_json(args.result) if action == 'validate' else None
+    requirement_id = args.requirement_id or (saved.get('requirement_id') if isinstance(saved, dict) else None)
+    if args.dataset and action != 'inspect' and not requirement_id:
+        raise ValueError('--dataset 需要 --requirement-id')
+    if action == 'extract' and (args.output.suffix != '.json' or args.output.exists()
+                                or args.output.with_suffix('.md').exists()):
+        raise ValueError('需要尚不存在的 .json 输出路径')
+    samples = ([load_requirement_manifest(args.manifest)] if args.manifest
+               else discover_requirements(args.dataset, requirement_id))
+    if action == 'inspect':
+        summary = {'requirements': [{'requirement_id': sample.sample_id, 'nodes': list(sample.nodes),
+                                    'input_fingerprint': sample.fingerprint, 'file_hashes': sample.file_hashes,
+                                    'source_lines': len(sample.catalog)} for sample in samples]}
+        if args.output:
+            write_json(args.output, summary)
+        return summary, 0
+    if len(samples) != 1:
+        raise ValueError('需要选定唯一需求')
+    sample = samples[0]
+    if action == 'validate':
+        validate_saved(saved, sample)
+        return {'requirement_id': sample.sample_id, 'exact_citations': 'passed', 'event_replay': 'passed',
+                'items': len(saved['items']), 'semantic_quality': 'requires_human_review'}, 0
+    result = extract_requirement(sample, ModelClient(Config.load(args.config)), args.mode)
+    save_result(args.output, result)
+    return {'output': str(args.output), 'requirement_id': sample.sample_id, 'items': len(result['items']),
+            'history_events': len(result['history']), 'metrics': result['metrics']}, 0
 
 
 def run_official(args):
@@ -278,6 +332,8 @@ def batch_extract(args):
 
 
 def run(args):
+    if args.command == 'requirement':
+        return run_requirement(args)
     if args.command == 'series':
         return run_series(args)
     if args.command == 'official':

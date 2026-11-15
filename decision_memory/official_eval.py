@@ -12,10 +12,13 @@ Metrics (from the competition brief):
 """
 
 import json
+import hashlib
 import random
 import re
 import zipfile
 from pathlib import Path, PurePosixPath
+
+from .evaluation import digest
 
 KNOWLEDGE_FILE = '应被沉淀知识标注.md'
 CONTEXT_FILE = '有效上下文标注.md'
@@ -28,6 +31,7 @@ JUDGE = '''你是命题07的评测员，严格按比赛口径给参赛方案的�
 - positives：标注的应沉淀知识（K/H），含知识内容与“前提、反例或边界”；
 - negatives：不应作为正向知识沉淀的过程信息（P），含其最终状态；
 - items：参赛方案输出的条目，含结论、理由、边界及其引用的原文行。
+- source_materials：程序根据数据集重建的真实原文行，含文件、节点或阶段、角色与行号；不要只信条目自报的引文。
 
 第一步，逐条判定 items（verdict 只能取以下之一）：
 - valid：结论与最终产物和最后有效决策一致，理由与边界有原文支持，是值得后续复用的知识（不必在 positives 中）；
@@ -48,6 +52,9 @@ JUDGE = '''你是命题07的评测员，严格按比赛口径给参赛方案的�
 {"items":[{"item_id":"…","verdict":"valid","matches":["K1"],"citation_support":true,"notes":"简短依据"}],
  "positives":[{"ref_id":"K1","coverage":"full","items":["…"],"notes":"简短依据"}]}
 items 必须与输入逐条一一对应，positives 必须覆盖输入中的每一条。
+每条判断必须有非空 notes。full/partial 的 items 必须为非空支持列表，且每个支持条目
+必须为 valid、citation_support=true，并在 matches 中包含该参考。missing 的 items 必须为空。
+matches 与支持列表须双向一致，不可重复 ID。内容有效但引用不支持时可单独报告，不能增加参考覆盖。
 '''
 
 
@@ -153,8 +160,8 @@ def item_payload(prediction):
         row = {'item_id': f'{prefix}:{item["id"]}', 'kind': item.get('kind')}
         for name in ('conclusion', 'reason', 'boundary'):
             row[name] = {'text': item[name]['text'],
-                         'cited_lines': [f'{e["file"].rsplit("/", 1)[-1]}#L{e["line"]}: {e["quote"]}'
-                                         for e in item[name]['evidence']]}
+                         'cited_lines': [{'source_id': e['source_id'], 'file': e['file'], 'line': e['line'],
+                                          'quote': e['quote']} for e in item[name]['evidence']]}
         rows.append(row)
     return rows
 
@@ -164,18 +171,30 @@ def validate_judgment(payload, item_ids, positive_ids):
             or not isinstance(payload.get('positives'), list):
         raise ValueError('评分结果需要 items 与 positives 数组')
     seen = {}
+
+    def links(value, allowed, location):
+        if (not isinstance(value, list) or any(not isinstance(key, str) for key in value)
+                or len(value) != len(set(value)) or not set(value) <= allowed):
+            raise ValueError(location + ' 需要无重复的已知 ID 数组')
+        return value
+
+    def explanation(row):
+        if not isinstance(row.get('notes'), str) or not row['notes'].strip():
+            raise ValueError('评分判断必须有非空 notes 说明')
+
     for row in payload['items']:
         if not isinstance(row, dict) or row.get('item_id') not in item_ids:
             raise ValueError('评分 items 含未知 item_id')
+        if row['item_id'] in seen:
+            raise ValueError('评分 items 含重复 item_id')
         if row.get('verdict') not in VERDICTS:
             raise ValueError('verdict 取值无效：' + str(row.get('verdict')))
-        matches = row.get('matches') or []
-        if not isinstance(matches, list) or not set(matches) <= positive_ids:
-            raise ValueError('matches 含未知参考 ID')
+        matches = links(row.get('matches'), positive_ids, 'matches')
         if matches and row['verdict'] != 'valid':
             raise ValueError('只有 valid 条目可以匹配参考')
         if type(row.get('citation_support')) is not bool:
             raise ValueError('citation_support 必须为布尔值')
+        explanation(row)
         seen[row['item_id']] = {**row, 'matches': matches}
     if set(seen) != item_ids:
         raise ValueError('评分 items 必须与预测逐条对应')
@@ -183,24 +202,40 @@ def validate_judgment(payload, item_ids, positive_ids):
     for row in payload['positives']:
         if not isinstance(row, dict) or row.get('ref_id') not in positive_ids or row.get('coverage') not in COVERAGE:
             raise ValueError('positives 含未知 ref_id 或无效 coverage')
+        if row['ref_id'] in coverage:
+            raise ValueError('positives 含重复 ref_id')
+        explanation(row)
+        supporters = links(row.get('items'), item_ids, 'positives.items')
+        if (row['coverage'] == 'missing') != (not supporters):
+            raise ValueError('full/partial 需要支持条目，missing 的支持列表必须为空')
+        for supporter in supporters:
+            judgment = seen[supporter]
+            if (judgment['verdict'] != 'valid' or not judgment['citation_support']
+                    or row['ref_id'] not in judgment['matches']):
+                raise ValueError('参考支持必须来自有效、引文支持且 matches 一致的条目')
         coverage[row['ref_id']] = row
     if set(coverage) != positive_ids:
         raise ValueError('positives 必须覆盖全部参考条目')
+    for item_id, row in seen.items():
+        if any(item_id not in coverage[ref_id]['items'] for ref_id in row['matches']):
+            raise ValueError('matches 必须与参考支持列表双向一致')
     return {'items': [seen[key] for key in sorted(seen)], 'positives': [coverage[key] for key in sorted(coverage)]}
 
 
-def judge_requirement(client, references, predictions, stage=None):
+def judge_requirement(client, references, predictions, stage=None, source_materials=None):
     from .pipeline import checked_call
     positives = [ref for ref in references['positives'] if stage is None or stage in ref['stages']]
     negatives = [ref for ref in references['negatives'] if stage is None or stage in ref['stages']]
     items = [row for prediction in predictions for row in item_payload(prediction)]
     if not positives:
         raise ValueError('该范围内没有正向参考')
+    if not isinstance(source_materials, list) or not source_materials:
+        raise ValueError('评分需要从数据集重建的实际源材料')
     request = json.dumps({'positives': [{key: value for key, value in ref.items() if key != 'stages'}
                                         for ref in positives],
                           'negatives': [{key: value for key, value in ref.items() if key != 'stages'}
                                         for ref in negatives],
-                          'items': items}, ensure_ascii=False)
+                          'items': items, 'source_materials': source_materials}, ensure_ascii=False)
     item_ids = {row['item_id'] for row in items}
     positive_ids = {ref['id'] for ref in positives}
     if not items:
@@ -223,7 +258,8 @@ def metrics(judgments, sample_size=10, seed=7):
     partial = sum(row['coverage'] == 'partial' for row in positives)
     valid = sum(row['verdict'] == 'valid' for row in items)
     supported = sum(row['citation_support'] for row in items)
-    recall = (full + 0.5 * partial) / len(positives) if positives else None
+    recall = full / len(positives) if positives else None
+    recall_weighted = (full + 0.5 * partial) / len(positives) if positives else None
     precision = valid / len(items) if items else None
     sampled = random.Random(seed).sample(items, min(sample_size, len(items)))
     sampled_ok = sum(row['citation_support'] for row in sampled)
@@ -232,7 +268,8 @@ def metrics(judgments, sample_size=10, seed=7):
         'scope_note': 'local_self_test_not_official_score',
         'positives': len(positives), 'full': full, 'partial': partial,
         'missing': len(positives) - full - partial,
-        'recall': recall, 'recall_strict': full / len(positives) if positives else None,
+        'recall': recall, 'recall_strict': recall, 'recall_weighted': recall_weighted,
+        'scoring_policy': 'full_coverage_primary_weighted_partial_local_auxiliary',
         'items': len(items), 'valid': valid, 'precision': precision, 'verdicts': verdicts,
         'citation_support_rate': supported / len(items) if items else None,
         'citation_sample': f'{sampled_ok}/{len(sampled)}',
@@ -249,9 +286,10 @@ def metrics(judgments, sample_size=10, seed=7):
 
 
 def load_predictions(directory: Path):
+    from .storage import read_json
     predictions = []
     for path in sorted(directory.glob('*.json')):
-        value = json.loads(path.read_text(encoding='utf-8'))
+        value = read_json(path)
         if isinstance(value, dict) and isinstance(value.get('items'), list) and value.get('sample_id'):
             predictions.append(value)
     if not predictions:
@@ -259,18 +297,75 @@ def load_predictions(directory: Path):
     return predictions
 
 
+def validated_inputs(dataset, predictions, scope):
+    """Check all predictions before any paid judging; never read their saved paths."""
+    from .requirements import discover_requirements
+    from .sources import STAGES, discover_samples
+    from .storage import validate_saved
+    grouped, sources, bindings = {}, {}, []
+    for prediction in predictions:
+        if prediction.get('scope') == 'requirement':
+            requirement = prediction.get('requirement_id')
+            if not isinstance(requirement, str) or requirement != prediction['sample_id']:
+                raise ValueError('需求预测身份不匹配')
+            if scope != 'requirement':
+                raise ValueError('需求级预测不能按阶段评分')
+        else:
+            stage, sid = prediction.get('stage'), prediction['sample_id']
+            if stage not in STAGES or not isinstance(sid, str) or not sid.endswith('-' + stage):
+                raise ValueError('阶段预测身份不匹配')
+            requirement = sid.removesuffix('-' + stage)
+        grouped.setdefault(requirement, []).append(prediction)
+    for requirement, rows in sorted(grouped.items()):
+        whole = [row for row in rows if row.get('scope') == 'requirement']
+        stages = discover_samples(dataset, requirement_id=requirement)
+        if whole:
+            if len(rows) != 1:
+                raise ValueError('同一需求不能混用需求级与阶段级预测，也不能重复预测')
+            samples = discover_requirements(dataset, requirement)
+            validate_saved(whole[0], samples[0])
+            source_sample = samples[0]
+            source_rows = []
+            for source in source_sample.catalog.values():
+                node = source_sample.nodes[source_sample.node_order(source.source_id)]
+                source_rows.append({'source_id': source.source_id, 'file': source.file, 'line': source.line,
+                                    'role': source.role, 'text': source.text, 'stage': node['stage'], 'node_id': node['id']})
+        else:
+            by_id = {sample.sample_id: sample for sample in stages}
+            supplied = [row['sample_id'] for row in rows]
+            if len(supplied) != len(set(supplied)) or not set(supplied) <= set(by_id):
+                raise ValueError('预测含重复或未知阶段')
+            if scope == 'requirement' and set(supplied) != set(by_id):
+                raise ValueError('需求级评分需要该需求的全部阶段预测；单阶段请使用 --scope stage')
+            source_rows = []
+            for row in rows:
+                sample = by_id[row['sample_id']]
+                validate_saved(row, sample)
+                source_rows.extend({'source_id': source.source_id, 'file': source.file, 'line': source.line,
+                                    'role': source.role, 'text': source.text, 'stage': sample.stage}
+                                   for source in sample.catalog.values())
+        sources[requirement] = source_rows
+        for row in rows:
+            bindings.append({'sample_id': row['sample_id'], 'requirement_id': requirement,
+                             'prediction_digest': digest(row), 'input_fingerprint': row['input_fingerprint'],
+                             'input_file_hashes': row['input_file_hashes'], 'version': row.get('version'),
+                             'prompt_hash': row.get('prompt_hash'), 'mode': row['mode'], 'model': row['model']})
+    return grouped, sources, bindings
+
+
 def render_report(report):
     total = report['total']
     lines = ['# 本地自测评分', '',
-             '按比赛口径用官方标注自测，评分模型为 `' + report['judge_model'] + '`。这不是正式成绩。', '',
-             '| 范围 | 召回 | 严格召回 | 准确率 | 引用支持 | 抽检 | 预计得分（召回/准确/来源） |',
+             '使用官方标注做本地自测，评分模型为 `' + report['judge_model'] + '`。这不是正式成绩。', '',
+             '主识别率只计完整覆盖。部分命中按 0.5 计算的值仅作本地辅助，不是题面明确规定的权重。', '',
+             '| 范围 | 完整覆盖率 | 本地加权辅助 | 准确率 | 引用支持 | 抽检 | 本地阈值换算（识别/准确/来源） |',
              '|---|---:|---:|---:|---:|---:|---|']
 
     def pct(value):
         return '—' if value is None else f'{value:.1%}'
     for name, value in [*report['requirements'].items(), ('合计', total)]:
         p = value['projected_points']
-        lines.append(f'| {name} | {pct(value["recall"])} | {pct(value["recall_strict"])} | {pct(value["precision"])} | '
+        lines.append(f'| {name} | {pct(value["recall"])} | {pct(value.get("recall_weighted"))} | {pct(value["precision"])} | '
                      f'{pct(value["citation_support_rate"])} | {value["citation_sample"]} | '
                      f'{p["recall"]}/{p["precision"]}/{p["source"] if p["source"] is not None else "—"} |')
     lines.extend(['', '## 漏提与不完整', ''])
@@ -285,21 +380,28 @@ def render_report(report):
 
 
 def evaluate(dataset: Path, predictions_dir: Path, client, scope='requirement'):
+    if scope not in ('requirement', 'stage'):
+        raise ValueError('评分 scope 只能为 requirement 或 stage')
     references = load_references(dataset)
-    grouped = {}
-    for prediction in load_predictions(predictions_dir):
-        grouped.setdefault(requirement_of(prediction['sample_id']), []).append(prediction)
+    grouped, sources, bindings = validated_inputs(dataset, load_predictions(predictions_dir), scope)
     judgments, per_requirement = {}, {}
     for requirement, predictions in sorted(grouped.items()):
         if requirement not in references:
             raise ValueError(f'标注中没有需求 {requirement}')
         if scope == 'requirement':
-            judgment = judge_requirement(client, references[requirement], predictions)
+            judgment = judge_requirement(client, references[requirement], predictions, source_materials=sources[requirement])
             judgments[requirement] = [judgment]
         else:
             judgments[requirement] = [judge_requirement(client, references[requirement], [prediction],
-                                                        prediction['stage']) for prediction in predictions]
+                                                        prediction['stage'], [row for row in sources[requirement]
+                                                                              if row['stage'] == prediction['stage']])
+                                         for prediction in predictions]
         per_requirement[requirement] = metrics(judgments[requirement])
     total = metrics([judgment for values in judgments.values() for judgment in values])
     return {'scope': scope, 'judge_model': client.config.model, 'requirements': per_requirement,
-            'total': total, 'judgments': judgments, 'judge_metrics': client.metrics()}
+            'total': total, 'judgments': judgments, 'judge_metrics': client.metrics(),
+            'prediction_bindings': bindings, 'source_materials_digest': digest(sources),
+            'judge_prompt_hash': hashlib.sha256(JUDGE.encode()).hexdigest(), 'judge_config': client.config.public(),
+            'input_coverage': {'dataset_requirements': sorted(references), 'evaluated_requirements': sorted(grouped),
+                               'all_requirements': set(references) == set(grouped)},
+            'human_review': 'pending', 'official_score': None}

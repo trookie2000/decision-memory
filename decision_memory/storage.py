@@ -44,6 +44,12 @@ def result_digest(result):
 
 
 def validate_saved(result, sample, client=None, mode=None):
+    from .requirements import RequirementSample
+    if isinstance(sample, RequirementSample) or (isinstance(result, dict) and result.get('scope') == 'requirement'):
+        from .requirement_pipeline import validate_requirement_saved
+        if not isinstance(sample, RequirementSample):
+            raise ValueError('需求结果需要完整需求输入，请使用 requirement validate')
+        return validate_requirement_saved(result, sample, client, mode)
     if not isinstance(result, dict) or result.get('input_fingerprint') != sample.fingerprint:
         raise ValueError('输入版本不匹配，请使用新的输出目录运行')
     if result.get('input_file_hashes') != sample.file_hashes:
@@ -63,9 +69,13 @@ def validate_saved(result, sample, client=None, mode=None):
 
 
 def render_markdown(result):
-    lines = [f'# 阶段交接 {result["sample_id"]}', '',
+    title = '需求知识' if result.get('scope') == 'requirement' else '阶段交接'
+    lines = [f'# {title} {result["sample_id"]}', '',
              f'模式 `{result["mode"]}`。模型 `{result["model"]}`。', '',
              '引用已通过程序逐字核对。条目语义和覆盖范围仍需人工评审。', '']
+    if result.get('scope') == 'requirement':
+        lines.extend(['节点顺序：' + ' → '.join(node['id'] + '（' + node['stage'] + '）' for node in result['nodes']),
+                      '', '以下条目为当前知识，历史版本另列。', ''])
     for item in result['items']:
         lines.extend([f'## {item["id"]}', ''])
         for key, title in (('conclusion', '结论'), ('reason', '理由'), ('boundary', '适用边界')):
@@ -81,6 +91,26 @@ def render_markdown(result):
             for evidence in question['evidence']:
                 lines.append(f'  - `{evidence["source_id"]}` · {evidence["file"]} 第 {evidence["line"]} 行 · {evidence["quote"]}')
         lines.append('')
+    if result.get('scope') == 'requirement':
+        lines.extend(['## 变更历史', '', '已失效或已替换的历史版本不作为现行知识。', ''])
+        for event in result['history']:
+            lines.extend([f'### {event["id"]} · {event["operation"]} · {event["status"]}', '',
+                          f'知识 `{event["knowledge_key"]}`，节点 `{event["node_id"]}`，版本 {event["version"]}。', ''])
+            if 'item' in event:
+                for name, label in (('conclusion', '结论'), ('reason', '理由'), ('boundary', '边界')):
+                    lines.extend([f'{label}：{event["item"][name]["text"]}', ''])
+                    for ref in event['item'][name]['evidence']:
+                        lines.append(f'- `{ref["source_id"]}` · {ref["file"]} 第 {ref["line"]} 行 · {ref["quote"]}')
+                    lines.append('')
+            else:
+                if 'note' in event:
+                    lines.extend([event['note'], ''])
+                refs = event['evidence']
+                if isinstance(refs, dict):
+                    refs = [ref for field in refs.values() for ref in field]
+                for ref in refs:
+                    lines.append(f'- `{ref["source_id"]}` · {ref["file"]} 第 {ref["line"]} 行 · {ref["quote"]}')
+                lines.append('')
     lines.extend(['## 运行记录', '', '```json', json.dumps(result['metrics'], ensure_ascii=False, indent=2), '```', ''])
     return '\n'.join(lines)
 
