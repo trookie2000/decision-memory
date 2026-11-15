@@ -8,12 +8,12 @@
 
 Mario MCP 通过本机 `http://127.0.0.1:38399/mcp` 连接。每个新进程实际读取工具和当前用户技能清单，选择 `kim-skill-assistant-cc/codex`。派发助手只发送原文及结构化 mention，不负责出题或评判。单 case 的默认配置为 `dispatch_context = "task"`，后续调用复用回执 `_meta.threadId`。连续批次使用 `operation`，每次派发采用独立上下文，将真实 threadId 绑定到具体操作。两种模式都不使用回复正文里可能混淆的群聊 ID。
 
-Docs 使用公开的 `ks-cli doc word create/fetch`，读取经过已安装的 docs-shuttle capture wrapper。不要手动传 token、恢复旧登录态或修改共享权限。先按 docs-shuttle 的官方预检规则确认依赖版本。`battle.example.toml` 的 CLI 路径按本机实际安装位置填写。
+Docs 使用公开的 `ks-cli doc word create/fetch`，读取经过已安装的 docs-shuttle capture wrapper。不要手动传 token、恢复旧登录态或修改共享权限。先按 docs-shuttle 的官方预检规则确认依赖版本。复制 `battle.example.toml` 为 `battle.local.toml`（已被 git 忽略），填写测试群和两位员工的 KIM 数字 ID（不是 Mario 页面上的员工 ID）及本机 ks-cli 路径。
 
 只读自检：
 
 ```bash
-.venv/bin/decision-memory battle doctor --config battle.example.toml
+.venv/bin/decision-memory battle doctor --config battle.local.toml
 ```
 
 可用 `--doc-id` 增加一份已知文档的实时读取检查。doctor 不发 KIM 消息、不创建远端文档；CLI 自身缓存和读取 capture 是本地产物。
@@ -24,7 +24,7 @@ Docs 使用公开的 `ks-cli doc word create/fetch`，读取经过已安装的 d
 
 ```bash
 .venv/bin/decision-memory battle start \
-  --config battle.example.toml \
+  --config battle.local.toml \
   --output runs/new-battle \
   --sample-id S004 --stage design \
   --brief-file docs/battle-brief.md \
@@ -49,7 +49,7 @@ Docs 使用公开的 `ks-cli doc word create/fetch`，读取经过已安装的 d
 
 ```bash
 .venv/bin/decision-memory series start \
-  --config battle.example.toml \
+  --config battle.local.toml \
   --model-config config.local.toml \
   --manifest examples/continuous-cases.json \
   --output runs/continuous-six
