@@ -684,6 +684,9 @@ class Battle:
         self.verify_files()
         if self.state['status'] in TERMINAL:
             return
+        if self.state['stage'] == 'requirement' and self.state['phase'] == 'scorer':
+            from .batch_gate import verify_batch_gate
+            verify_batch_gate(self)
         if self.state['phase'] == 'extract':
             self.extraction_step()
         else:

@@ -105,6 +105,65 @@ class RequirementSeriesTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '实现|提示词'):
                 battle.run(0, retry_extraction=True)
 
+    def test_direct_resume_rechecks_the_actual_stage_prompt_file(self):
+        battle = self.paused_after_freeze()
+        original = Path.read_bytes
+        def changed(path):
+            content = original(path)
+            return content + b'\n# changed prompt\n' if path.name == 'prompts.py' else content
+        with patch.object(Path, 'read_bytes', changed):
+            with self.assertRaisesRegex(ValueError, '实现|提示词'):
+                battle.run(0, retry_extraction=True)
+
+    def test_direct_resume_rechecks_package_version_source(self):
+        battle = self.paused_after_freeze()
+        original = Path.read_bytes
+        def changed(path):
+            content = original(path)
+            return content + b'\n# changed version\n' if path.name == '__init__.py' else content
+        with patch.object(Path, 'read_bytes', changed):
+            with self.assertRaisesRegex(ValueError, '实现|提示词'):
+                battle.run(0, retry_extraction=True)
+
+    def test_scoring_resume_checks_batch_before_any_remote_write(self):
+        def extract_and_stop(*args):
+            result = Battle._extract_process(*args)
+            Series(self.root, **self.deps()).request_stop()
+            return result
+        with model_server([(200, completion(value)) for value in replies()]) as (endpoint, _):
+            self.model.write_text(f'[model]\nendpoint="{endpoint}"\nmodel="fixture"\napi_key_env=""\nretries=0\n')
+            series = Series.create(self.root, BattleConfig(), self.model, self.cases, **self.deps(extract_and_stop))
+            self.assertEqual(series.run()['status'], 'stopped')
+            battle = Battle(self.root / 'cases/N1', **self.deps()['battle_dependencies'])
+            self.assertEqual(battle.state['phase'], 'scorer')
+            created = len(self.docs.creates)
+            with patch('decision_memory.batch_gate.implementation_signature', return_value={}):
+                with self.assertRaisesRegex(ValueError, '实现|提示词'):
+                    battle.run(0)
+            self.assertEqual(len(self.docs.creates), created)
+
+    def test_failed_final_freeze_resumes_preparation_then_evaluates(self):
+        self.freeze_failure_and_resume(force_all_prepared_index=False)
+
+    def test_saved_all_prepared_index_still_has_to_freeze_and_evaluate(self):
+        self.freeze_failure_and_resume(force_all_prepared_index=True)
+
+    def freeze_failure_and_resume(self, force_all_prepared_index):
+        with model_server([(200, completion(value)) for value in replies() + replies()]) as (endpoint, requests):
+            self.model.write_text(f'[model]\nendpoint="{endpoint}"\nmodel="fixture"\napi_key_env=""\nretries=0\n')
+            series = Series.create(self.root, BattleConfig(), self.model, self.cases, **self.deps())
+            with patch('decision_memory.batch_gate.freeze_batch', side_effect=OSError('fixture freeze write error')):
+                self.assertEqual(series.run()['status'], 'blocked')
+            self.assertEqual(requests, [])
+            if force_all_prepared_index:
+                series.state.update(index=2, evaluation_pass='prepare')
+                series.save()
+            value = Series(self.root, **self.deps()).run(resume=True)
+            self.assertEqual(value['status'], 'completed', value)
+            self.assertEqual(value['evaluation_pass'], 'evaluate')
+            self.assertTrue((self.root / 'frozen-batch.json').exists())
+            self.assertEqual(len(requests), 6)
+
 
 if __name__ == '__main__':
     unittest.main()

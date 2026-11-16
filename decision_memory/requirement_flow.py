@@ -14,6 +14,7 @@ def summarize_comparisons(records, total):
               and row['score'].get('kind') == 'requirement-comparison']
     summary = {'expected_cases': total, 'fully_scored_cases': sum(score['complete'] for score in scores),
                'metric_scope': 'local_agent_review_not_official_score', 'methods': {}}
+    batch_complete = len(scores) == total and all(score['complete'] for score in scores)
     for method in ('whole', 'per_node'):
         values, costs = [], []
         for score in scores:
@@ -21,7 +22,7 @@ def summarize_comparisons(records, total):
                 if assigned == method:
                     values.append(score['variants'][label])
                     costs.append(score['metrics'][method])
-        complete = len(values) == total and all(value['complete'] for value in values)
+        complete = batch_complete and len(values) == total and all(value['complete'] for value in values)
         counts = {name: sum(value['decisions'][name] for value in values)
                   for name in ('correct', 'reviewed', 'citation_supported', 'citation_reviewed')}
         def ratio(top, bottom):

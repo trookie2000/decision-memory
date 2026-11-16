@@ -8,9 +8,9 @@ from .requirement_protocol import reference_policy, validate_requirement_referen
 from .requirements import assemble_requirement, read_requirement_manifest
 from .storage import read_json, result_digest, write_json
 
-IMPLEMENTATION_FILES = ('batch_gate.py', 'battle_protocol.py', 'cli.py', 'client.py', 'collaboration.py',
+IMPLEMENTATION_FILES = ('__init__.py', 'batch_gate.py', 'battle_protocol.py', 'cli.py', 'client.py', 'collaboration.py',
                         'comparison.py', 'coordinator.py', 'evaluation.py', 'pipeline.py', 'requirement_flow.py',
-                        'requirement_memory.py', 'requirement_pipeline.py', 'requirement_protocol.py',
+                        'prompts.py', 'requirement_memory.py', 'requirement_pipeline.py', 'requirement_protocol.py',
                         'requirements.py', 'review_v2.py', 'series.py', 'sources.py', 'storage.py', 'task_delivery.py', 'validation.py')
 
 

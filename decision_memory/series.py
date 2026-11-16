@@ -223,6 +223,11 @@ class Series:
             write_json(self.root / 'process.json', process, overwrite=True)
             return {**self.summary(), 'pid': child.pid, 'launch': 'started'}
 
+    def finish_preparation(self):
+        from .batch_gate import freeze_batch
+        freeze_batch(self.root, self.state)
+        self.state.update(evaluation_pass='evaluate', index=0, prepared_count=len(self.cases))
+
     def run(self, resume=False, retry_extraction=False):
         with run_lock(self.root):
             if read_json(self.root / 'series-state.json') != self.state:
@@ -243,6 +248,8 @@ class Series:
             self.save()
             try:
                 self.verify_inputs()
+                if self.state.get('evaluation_pass') == 'prepare' and self.state['index'] == len(self.cases):
+                    self.finish_preparation()
                 model_checked = False
                 end = time.monotonic() + self.state['max_seconds']
                 while self.state['index'] < len(self.cases):
@@ -298,12 +305,11 @@ class Series:
                                       'total': len(self.cases), **record}, ensure_ascii=False), flush=True)
                     prepare = self.state.get('evaluation_pass') == 'prepare'
                     if prepare and value['status'] == 'awaiting_model' and value['sample_frozen']:
-                        self.state['prepared_count'] += 1
-                        self.state['index'] += 1
-                        if self.state['index'] == len(self.cases):
-                            from .batch_gate import freeze_batch
-                            freeze_batch(self.root, self.state)
-                            self.state.update(evaluation_pass='evaluate', index=0)
+                        if self.state['index'] + 1 == len(self.cases):
+                            self.finish_preparation()
+                        else:
+                            self.state['prepared_count'] += 1
+                            self.state['index'] += 1
                     elif prepare and value['status'] == 'human_review':
                         self.state.update(status='blocked', last_error=f'{case["sample_id"]} 审题需人工确认，整批不进入提取')
                     elif value['status'] in ('agent_review_complete', 'agent_review_pending', 'human_review'):
@@ -323,7 +329,7 @@ class Series:
                         break
                     if value['status'] == 'waiting':
                         self.sleep(self.config.poll_interval)
-                if self.state['index'] == len(self.cases):
+                if self.state['index'] == len(self.cases) and self.state.get('evaluation_pass') != 'prepare':
                     self.state['status'] = 'completed'
             except (OSError, ValueError, ModelError, TransportError, subprocess.SubprocessError) as error:
                 self.state['status'] = 'blocked'
