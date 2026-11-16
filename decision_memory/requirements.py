@@ -70,7 +70,8 @@ def assemble_requirement(requirement_id, nodes):
     return RequirementSample(requirement_id, 'requirement', fingerprint, catalog, files, total, tuple(metadata))
 
 
-def load_requirement_manifest(path: Path) -> RequirementSample:
+def read_requirement_manifest(path: Path):
+    """Read the exact node pairs for whole and per-node extraction."""
     if path.stat().st_size > MAX_FILE_BYTES:
         raise ValueError('需求清单超过 2 MB 上限')
     value = json.loads(path.read_text(encoding='utf-8'))
@@ -108,7 +109,12 @@ def load_requirement_manifest(path: Path) -> RequirementSample:
             raise ValueError('对话和产物必须是不同文件')
         sample = index_materials(dialogue, artifact, node['stage'], node['id'], dialogue_name, artifact_name)
         nodes.append((node['id'], node['stage'], sample))
-    return assemble_requirement(value['requirement_id'], nodes)
+    return value['requirement_id'], nodes
+
+
+def load_requirement_manifest(path: Path) -> RequirementSample:
+    requirement_id, nodes = read_requirement_manifest(path)
+    return assemble_requirement(requirement_id, nodes)
 
 
 def discover_requirements(path: Path, requirement_id: str | None = None) -> list[RequirementSample]:

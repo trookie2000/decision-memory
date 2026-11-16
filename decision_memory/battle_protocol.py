@@ -61,6 +61,13 @@ def parse_document(markdown, identity, completion_marker, stage, task_input_dige
     if role == 'author':
         if metadata.get('status') != 'completed':
             raise ValueError('出题结果 status 必须为 completed')
+        if stage == 'requirement':
+            from .requirement_protocol import parse_requirement
+            if not all(name in blocks for name in ('requirement.json', 'gold.json')):
+                raise ValueError('整需求出题缺少 requirement.json/gold.json')
+            parsed = parse_requirement(json.loads(blocks['requirement.json']), json.loads(blocks['gold.json']),
+                                       identity['sample_id'])
+            return {'metadata': metadata, **parsed}
         if not all(name in blocks for name in ('dialogue.md', 'artifact.md', 'gold.json')):
             raise ValueError('出题结果缺少 dialogue.md/artifact.md/gold.json')
         references = validate_gold(json.loads(blocks['gold.json']), blocks['dialogue.md'], blocks['artifact.md'], stage)
@@ -97,7 +104,10 @@ def worker_message(identity, completion_marker, url, stage, payload):
 完成标记只能在完整内容已成功写入后添加；接口失败时在 KIM 如实说明，不得冒充完成。
 这是 Agent 初评，绝不等于人工确认或比赛正式成绩。阶段为 {stage}。
 '''
-    if identity['role'] == 'author':
+    if stage == 'requirement':
+        from .requirement_protocol import worker_instructions
+        instructions = worker_instructions(identity['role'])
+    elif identity['role'] == 'author':
         instructions = '''你是真实出题员工。根据给定 brief 生成一份虚构的、单个已完成研发阶段的样本。
 请给 8～12 条自然的用户/AGENT 交替消息，使用 **用户：** 和 **AGENT：** 标记；包含提议、纠偏和最终确认。
 不要将候选参考答案或评审口吻混入对话/产物。业务事实只存在于当前阶段；未知理由/边界保持未说明，未决问题不得补成决定。

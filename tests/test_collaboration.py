@@ -67,6 +67,15 @@ class CollaborationTests(unittest.TestCase):
         with self.assertRaisesRegex(TransportError, '不匹配'):
             DocsCLI.document({'docId': 'known', 'openDocUrl': 'https://docs.corp.kuaishou.com/d/home/other'})
 
+    def test_docs_uses_current_public_cli_and_leaves_sharing_defaults(self):
+        docs = DocsCLI(BattleConfig())
+        with patch.object(docs, 'execute', return_value={'ok': True}) as execute:
+            docs.create('测试标题', Path('/tmp/fixture.md'))
+            command = execute.call_args.args[0]
+        self.assertEqual(command[:4], ['kcli', 'docs-cli', 'word', '+create'])
+        self.assertNotIn('--link-share', command)
+        self.assertNotIn('--classify-level', command)
+
 
 if __name__ == '__main__':
     unittest.main()

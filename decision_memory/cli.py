@@ -79,13 +79,13 @@ def parser():
 def add_requirement_arguments(commands):
     command = commands.add_parser('requirement', help='按有序节点提取完整需求，保存知识更新与失效记录')
     actions = command.add_subparsers(dest='requirement_command', required=True)
-    for action in ('inspect', 'extract', 'validate'):
+    for action in ('inspect', 'extract', 'validate', 'compare'):
         leaf = actions.add_parser(action)
         source = leaf.add_mutually_exclusive_group(required=True)
         source.add_argument('--manifest', type=Path, help='显式列出有序节点的 JSON 清单')
         source.add_argument('--dataset', type=Path, help='官方 ZIP 或目录，不读取评测标注')
         leaf.add_argument('--requirement-id', help='数据集中的需求目录名')
-        if action == 'extract':
+        if action in ('extract', 'compare'):
             add_model_arguments(leaf)
             leaf.add_argument('--output', required=True, type=Path)
         elif action == 'inspect':
@@ -123,6 +123,14 @@ def run_requirement(args):
         validate_saved(saved, sample)
         return {'requirement_id': sample.sample_id, 'exact_citations': 'passed', 'event_replay': 'passed',
                 'items': len(saved['items']), 'semantic_quality': 'requires_human_review'}, 0
+    if action == 'compare':
+        from .comparison import run_comparison
+        from .requirements import read_requirement_manifest
+        nodes = (read_requirement_manifest(args.manifest)[1] if args.manifest else [
+            (node.stage, node.stage, node) for node in discover_samples(args.dataset, requirement_id=requirement_id)])
+        result = run_comparison(sample, nodes, Config.load(args.config), args.mode, args.output)
+        return {'output': str(args.output), 'requirement_id': sample.sample_id,
+                'metrics': result['metrics'], 'human_review': 'pending'}, 0
     result = extract_requirement(sample, ModelClient(Config.load(args.config)), args.mode)
     save_result(args.output, result)
     return {'output': str(args.output), 'requirement_id': sample.sample_id, 'items': len(result['items']),
@@ -192,6 +200,7 @@ def run_series(args):
 
 
 def add_battle_arguments(commands):
+    from .coordinator import BATTLE_STAGES
     battle = commands.add_parser('battle', help='通过真实 Mario 员工出题、审题、修订与独立评测')
     actions = battle.add_subparsers(dest='battle_command', required=True)
     doctor = actions.add_parser('doctor', help='只读核对 Mario 工具/技能及可选 Docs 文档')
@@ -201,7 +210,7 @@ def add_battle_arguments(commands):
     start.add_argument('--config', required=True, type=Path)
     start.add_argument('--output', required=True, type=Path)
     start.add_argument('--sample-id', required=True)
-    start.add_argument('--stage', required=True, choices=STAGES)
+    start.add_argument('--stage', required=True, choices=BATTLE_STAGES)
     start.add_argument('--brief-file', required=True, type=Path)
     start.add_argument('--clarification-file', type=Path, help='在首次审题时才加入的合成测试条件')
     start.add_argument('--model-config', type=Path)

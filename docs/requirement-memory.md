@@ -120,6 +120,21 @@ python3 -m decision_memory requirement validate \
 
 ## 比较质量和成本
 
+可对同一份输入生成两种原始预测。
+
+```bash
+python3 -m decision_memory requirement compare \
+  --manifest examples/requirement-cache/manifest.json \
+  --config config.local.toml --mode baseline \
+  --output runs/requirement-cache-comparison
+```
+
+whole 读取完整需求，per_node 将旧提取算法分别应用于每个节点，再机械拼接。对照方法不删除过期内容、重复条目或未决项。只有 ID 和来源编号转换，原始文字不变。这个命令生成比较包，不自动给出质量分数。
+
+`whole.json` 和 `nodes/` 保留各自原始结果，`prediction.json` 绑定输入、匿名视图、原始预测及映射。不同方法分别记录真实用量。输出目录已有内容时拒绝重跑，包括调用中途失败留下的目录。
+
+使用现有两位 Mario 员工出题、审题并按 v2 对两种方法评分，见 [整需求六例对照](coordinator.md#整需求的六例对照)。批次先冻结所有题目，再开始提取；原始预测和参考不会在评分时被改写。
+
 先冻结一批未用于调试的需求、原文和人工参考，再用相同材料比较原阶段流程与需求级流程。提取器只接收对话和产物；参考答案只给独立评分环节。调试过的公开样本单独报告。
 
 对于带标注的官方格式数据集，可以把多个完整需求结果放在同一个新目录中，再执行本地评分。

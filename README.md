@@ -6,7 +6,7 @@ Python 3.11+。运行时仅使用标准库。默认输出 JSON 和 Markdown，�
 
 ## 当前验证范围
 
-新增 `requirement inspect/extract/validate`，可通过清单读取分析、设计、编码等节点，或组合现有数据集中的分析与设计材料。需求级 `verified` 正常调用 2 次模型；旧阶段流程保持原行为。本轮完整回归 179 项通过。虚构示例、操作说明和后续质量验证方法见 [完整需求提取](docs/requirement-memory.md)。真实模型效果待独立实验确认。
+新增 `requirement inspect/extract/validate/compare`，可通过清单读取分析、设计、编码等节点，或组合现有数据集中的分析与设计材料。需求级 `verified` 正常调用 2 次模型；旧阶段流程保持原行为。整需求协调器已接入原员工出题与 v2 分轨评分，批次先冻结所有题目，再比较整需求与逐节点方法。工程验证与真实模型效果分别记录，操作说明见 [完整需求提取](docs/requirement-memory.md) 和 [整需求六例对照](docs/coordinator.md#整需求的六例对照)。
 
 2026-11-13，原 S004～S009 批次已完成 6/6。两位真实 Mario 员工完成出题、审题和评分，CLI 独立调用 Kimi 提取。S006、S008 经两轮修订。共保存 28 条决策和 8 条未决项；28 条决策均获员工肯定初评，人工确认仍待完成。逐例记录见本机 `runs/continuous-six-20261112/evaluation-summary.md`。
 
