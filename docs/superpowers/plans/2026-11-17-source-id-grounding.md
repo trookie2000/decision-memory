@@ -31,9 +31,9 @@
 
 **Interfaces:** `source_packet(sample) -> str`、`gap_catalog(sample) -> list`、`decode_event_stream(payload, sample) -> dict`、`decode_review_reply(payload, sample) -> tuple`、`encode_event_stream(compiled, sample) -> dict`；`field_evidence_candidates(compiled, sample, limit=6) -> list`、`validate_literal_grounding(compiled) -> dict`。
 
-- [ ] 写失败测试并实际观察：整行展开、全部事件类型、gap 绑定、无损列式还原、对象/重复/假编号拒绝、检索不越未来节点、字段自身符号缺失、普通术语不误拦。
-- [ ] 实现编号协议与有界检索，不修改原输入对象或原材料。
-- [ ] 目标测试及完整测试集通过，核对采集后提交。
+- [x] 写失败测试并实际观察：整行展开、全部事件类型、gap 绑定、无损列式还原、对象/重复/假编号拒绝、检索不越未来节点、字段自身符号缺失、普通术语不误拦。
+- [x] 实现编号协议与有界检索，不修改原输入对象或原材料。
+- [x] 目标测试及完整测试集通过，核对采集后提交。
 
 ### Task 2: v2 调度、CLI 和离线证明
 
@@ -41,17 +41,19 @@
 
 **Interfaces:** `extract_audited_requirement_v2(sample, client, run_dir)`；旧 `requirement_result` 接口新增可选 audit_version/literal_grounding，默认行为不变；AuditRun 可接收独立 prompt_hash。
 
-- [ ] 写本地 HTTP 失败测试并观察：两次正常请求发布 schema 4、来源由程序填写、符号缺失修复、needs_review 不发布、输入/证明篡改、四请求上限、无效 JSON/断流/认证回显不重发。
-- [ ] 实现 v2 提示和调度，串接已有校验；完整来源表只传一次，建议和原文均不得包含 gold。
-- [ ] 离线 validate 和 HTML 处理 schema 4；原 v1 结果及阶段流程回归。
-- [ ] 目标测试及完整测试集通过，核对采集后提交。
+- [x] 写本地 HTTP 失败测试并观察：两次正常请求发布 schema 4、来源由程序填写、符号缺失修复、needs_review 不发布、输入/证明篡改、四请求上限、无效 JSON/断流/认证回显不重发。
+- [x] 实现 v2 提示和调度，串接已有校验；完整来源表只传一次，建议和原文均不得包含 gold。
+- [x] 离线 validate 和 HTML 处理 schema 4；原 v1 结果及阶段流程回归。
+- [x] 目标测试及完整测试集通过，核对采集后提交。
 
 ### Task 3: 保留材料、真实对照和交付
 
 **Files:** 私有试验记录在 `runs/semantic-grounding-eval-20261117/`；公开使用说明及本计划。
 
-- [ ] 隔离整理并独立复核两份保留需求，冻结输入、参考和预算。
-- [ ] 发起一次新上下文代码评审，修复重要问题并运行完整测试。
-- [ ] 冻结实现和相同模型配置，开发集回放及保留需求成对运行；总 HTTP 上限 20，并发上限 2，按 spec 停止条件执行。
-- [ ] 隔离判卷全部可用结果，复算质量、未知、覆盖、可用性和成本；依预先门槛作发布取舍。
-- [ ] 更新文档、核对采集、提交并尝试非交互推送；无法认证时保留源码包和可复现验收，不假报发布成功。
+- [x] 隔离整理并独立复核两份保留需求，冻结输入、参考和预算。
+- [x] 发起一次新上下文代码评审，修复重要问题并运行完整测试。
+- [x] 冻结实现和相同模型配置，开发集回放及保留需求成对运行；总 HTTP 上限 20，并发上限 2，按 spec 停止条件执行。
+- [x] 隔离判卷全部可用结果，复算质量、未知、覆盖、可用性和成本；依预先门槛作发布取舍。
+- [x] 更新文档、核对采集、提交并尝试非交互推送；认证已确认失效，采用源码包和可复现验收交付，GitHub 发布仍待重新登录。
+
+验收：模型固定 `b2ab61f`，15 次完整请求，无执行未知；v2 未发布，按预设门槛保留实验开关。绝对路径误拒绝的后续修复 `6c7fa08` 通过 297 项回归，未重发模型请求。详情见 `docs/evidence-audit-v2-evaluation.md`。
