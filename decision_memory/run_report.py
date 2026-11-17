@@ -32,8 +32,9 @@ def render_result_html(result, sample):
             field = item[name]
             body += '<h3>' + title + '</h3><p>' + esc(field['text']) + '</p>'
             for ref in field['evidence']:
+                label = ' · 程序补充的流程标题' if ref['source_id'] in field.get('evidence_context', {}).get('added_source_ids', []) else ''
                 body += ('<p><a href="#' + source_anchors[ref['source_id']] + '">' + esc(ref['source_id']) +
-                         '</a> · ' + esc(ref['file']) + ' 第 ' + esc(ref['line']) + ' 行</p><blockquote>' +
+                         '</a> · ' + esc(ref['file']) + ' 第 ' + esc(ref['line']) + ' 行' + label + '</p><blockquote>' +
                          esc(ref['quote']) + '</blockquote>')
         body += '</article>'
     body += '<h2>待确认事项</h2>'
@@ -41,6 +42,8 @@ def render_result_html(result, sample):
         body += '<article><p>' + esc(question['text']) + '</p>'
         for ref in question['evidence']:
             body += '<a href="#' + source_anchors[ref['source_id']] + '">' + esc(ref['source_id']) + '</a> '
+            if ref['source_id'] in question.get('evidence_context', {}).get('added_source_ids', []):
+                body += '<small>程序补充的流程标题</small>'
             body += '<blockquote>' + esc(ref['quote']) + '</blockquote>'
         body += '</article>'
     body += '<h2>原文位置</h2><p>包含本次明确提供的所有原文行；未加载其他阶段或评测标注。</p>'

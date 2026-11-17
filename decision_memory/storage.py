@@ -88,14 +88,16 @@ def render_markdown(result):
             field = item[key]
             lines.extend([f'**{title}**', '', field['text'], ''])
             for evidence in field['evidence']:
-                lines.extend([f'- `{evidence["source_id"]}` · {evidence["file"]} 第 {evidence["line"]} 行',
+                label = ' · 程序补充的流程标题' if evidence['source_id'] in field.get('evidence_context', {}).get('added_source_ids', []) else ''
+                lines.extend([f'- `{evidence["source_id"]}` · {evidence["file"]} 第 {evidence["line"]} 行' + label,
                               f'  > {evidence["quote"]}', ''])
     if result['open_questions']:
         lines.extend(['## 待确认', ''])
         for question in result['open_questions']:
             lines.append('- ' + question['text'])
             for evidence in question['evidence']:
-                lines.append(f'  - `{evidence["source_id"]}` · {evidence["file"]} 第 {evidence["line"]} 行 · {evidence["quote"]}')
+                label = ' · 程序补充的流程标题' if evidence['source_id'] in question.get('evidence_context', {}).get('added_source_ids', []) else ''
+                lines.append(f'  - `{evidence["source_id"]}` · {evidence["file"]} 第 {evidence["line"]} 行{label} · {evidence["quote"]}')
         lines.append('')
     if result.get('scope') == 'requirement' and result.get('schema_version') != 5:
         lines.extend(['## 变更历史', '', '已失效或已替换的历史版本不作为现行知识。', ''])

@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 from . import __version__, prompts
 from .client import ModelError
+from .context_sources import CONTEXT_POLICY, add_flow_headers, declared_source_ids, flow_context
 from .evaluation import digest
 from .field_grounding import validate_literal_grounding
 from .requirements import RequirementSample
@@ -94,7 +95,7 @@ def _literal(items):
         'memory_index': [{'knowledge_key': item['id']} for item in items]})
 
 
-def decode_payload(payload, sample, *, enforce_bindings=True):
+def decode_payload(payload, sample, *, enforce_bindings=True, include_context=True):
     if not isinstance(payload, dict) or not isinstance(payload.get('items'), list) or not isinstance(payload.get('open_questions'), list):
         raise ValueError('需要 items/open_questions 数组')
     if len(payload['items']) > MAX_ITEMS or len(payload['open_questions']) > MAX_QUESTIONS:
@@ -122,11 +123,15 @@ def decode_payload(payload, sample, *, enforce_bindings=True):
         raise ValueError('；'.join(errors)[:12000])
     expanded = {'items': [], 'open_questions': []}
     size = 0
+    context_map = flow_context(sample) if include_context else {}
+    context_records = []
 
     def expand(value):
         nonlocal size
         evidence = []
-        for key in value['evidence']:
+        ids, context_record = add_flow_headers(value['evidence'], context_map, MAX_REFS)
+        context_records.append(context_record)
+        for key in ids:
             source = sample.catalog[key]
             size += len(source.text.encode('utf-8'))
             if size > MAX_EXPANDED_BYTES:
@@ -144,12 +149,16 @@ def decode_payload(payload, sample, *, enforce_bindings=True):
         expanded['items'].append(entry)
     expanded['open_questions'] = [expand(q) for q in payload['open_questions']]
     result = validate_result(expanded, sample)
+    result_fields = [item[name] for item in result['items'] for name in FIELDS] + result['open_questions']
+    for field, context_record in zip(result_fields, context_records):
+        if context_record is not None:
+            field['evidence_context'] = context_record
     if enforce_bindings:
         _literal(result['items'])
     return result
 
 
-def encode_result(result):
+def encode_result(result, *, declared_only=False):
     def compact(field):
         text = field['text']
         if 'protocol_normalization' in field:
@@ -160,16 +169,17 @@ def encode_result(result):
                     or record['original_text'].strip() not in ('未说明。', '未说明.')):
                 raise ValueError('未说明规范化记录无效')
             text = record['original_text']
-        return {'text': text, 'evidence': [ref['source_id'] for ref in field['evidence']]}
+        declared = declared_source_ids(field)
+        return {'text': text, 'evidence': declared if declared_only else [ref['source_id'] for ref in field['evidence']]}
     return {'items': [{**({'kind': item['kind']} if 'kind' in item else {}),
                        **{name: compact(item[name]) for name in FIELDS}} for item in result['items']],
             'open_questions': [compact(q) for q in result['open_questions']]}
 
 
-def review_payload(payload, sample):
+def review_payload(payload, sample, *, include_context=True):
     if not isinstance(payload, dict) or set(payload) != {'items', 'open_questions', 'review_notes', 'field_checks'}:
         raise ValueError('复核需要完整 items/open_questions/review_notes/field_checks')
-    result = decode_payload(payload, sample)
+    result = decode_payload(payload, sample, include_context=include_context)
     notes, checks = payload['review_notes'], payload['field_checks']
     if not isinstance(notes, list) or len(notes) > 128 or any(not isinstance(note, str) for note in notes):
         raise ValueError('review_notes 必须为字符串数组')
@@ -196,11 +206,16 @@ def review_payload(payload, sample):
              'status': 'needs_review' if unsupported else 'model_supported',
              'field_checks': rows, 'literal_bindings': _literal(result['items']),
              'input_digest': digest(result)}
+    if include_context:
+        proof['context_policy_digest'] = digest(CONTEXT_POLICY)
     return {**result, 'review_notes': notes, 'grounding_proof': proof}
 
 
-def signature(sample, config):
-    return digest([sample.fingerprint, config, 'grounded', PROMPT_HASH, __version__])
+def signature(sample, config, *, include_context=True):
+    parts = [sample.fingerprint, config, 'grounded', PROMPT_HASH, __version__]
+    if include_context:
+        parts.append(digest(CONTEXT_POLICY))
+    return digest(parts)
 
 
 def extract_grounded(sample, client, run_dir):
@@ -269,16 +284,17 @@ def validate_grounded_saved(result, sample, client=None, mode=None):
         raise ValueError('grounded 协议、输入范围或版本不匹配')
     if result.get('result_digest') != result_digest(result):
         raise ValueError('结果完整性校验失败')
-    requested = result.get('requested_config')
-    if not isinstance(requested, dict) or result.get('run_signature') != signature(sample, requested):
-        raise ValueError('grounded 运行签名不匹配')
-    if client and (mode != 'grounded' or client.config.public() != requested):
-        raise ValueError('运行配置或模式已改变')
     proof = result.get('grounding_proof')
     if not isinstance(proof, dict):
         raise ValueError('grounded 缺少字段证明')
-    replay = review_payload({**encode_result(result), 'review_notes': result.get('review_notes'),
-                             'field_checks': proof.get('field_checks')}, sample)
+    include_context = 'context_policy_digest' in proof
+    requested = result.get('requested_config')
+    if not isinstance(requested, dict) or result.get('run_signature') != signature(sample, requested, include_context=include_context):
+        raise ValueError('grounded 运行签名不匹配')
+    if client and (mode != 'grounded' or client.config.public() != requested):
+        raise ValueError('运行配置或模式已改变')
+    replay = review_payload({**encode_result(result, declared_only=True), 'review_notes': result.get('review_notes'),
+                             'field_checks': proof.get('field_checks')}, sample, include_context=include_context)
     if (result.get('items') != replay['items'] or result.get('open_questions') != replay['open_questions']
             or proof != replay['grounding_proof'] or proof['status'] != 'model_supported'):
         raise ValueError('grounded 整行证据或字段证明与原文不一致')
