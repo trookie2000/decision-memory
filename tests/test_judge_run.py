@@ -5,6 +5,9 @@ import os
 import tempfile
 import unittest
 import zipfile
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
@@ -174,6 +177,70 @@ class JudgeRunTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     execute_run(stage, self.config(url), root / 'out', scope='requirement')
             self.assertEqual(requests, [])
+
+    def test_all_first_requests_include_system_prompt_before_any_http(self):
+        from decision_memory.grounded import EXTRACT, source_packet
+        from decision_memory.sources import index_materials
+        large = index_materials('**用户：**\n' + '可复用知识。' * 300, '明确范围。', 'design', 'LARGE', 'd.md', 'a.md')
+        limit = len(source_packet(large)) + len(EXTRACT) - 10
+        with tempfile.TemporaryDirectory() as temporary, model_server([]) as (url, requests):
+            path = Path(temporary) / 'out'
+            with self.assertRaises(ValueError):
+                execute_run([context(), large], self.config(url, max_input_chars=limit), path, scope='stage')
+            self.assertFalse(path.exists())
+            self.assertEqual(requests, [])
+
+    def test_artifact_only_preflight_checks_filtered_request_not_large_dialogue(self):
+        from decision_memory.sources import index_materials
+        sample = index_materials('**用户：**\n' + '无关讨论。' * 5000, '明确范围。', 'design', 'LARGE', 'd.md', 'a.md')
+        value = {'items': [{'conclusion': {'text': '明确范围。', 'evidence': [{'source_id': 'A00001', 'quote': '明确范围。'}]},
+                           'reason': {'text': '未说明', 'evidence': []},
+                           'boundary': {'text': '未说明', 'evidence': []}}], 'open_questions': []}
+        with tempfile.TemporaryDirectory() as temporary, model_server([(200, completion(value))]) as (url, requests):
+            report = execute_run([sample], self.config(url, max_input_chars=8000), Path(temporary) / 'out',
+                                 scope='stage', mode='artifact-only')
+            self.assertEqual(report['status'], 'completed')
+            self.assertEqual(len(requests), 1)
+
+    def test_absolute_deadline_interrupts_dripping_body_and_slow_headers(self):
+        for phase in ('body', 'headers'):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as temporary:
+                requests = []
+
+                class Handler(BaseHTTPRequestHandler):
+                    def do_POST(self):
+                        requests.append(self.rfile.read(int(self.headers['Content-Length'])))
+                        body = json.dumps(completion({'items': [], 'open_questions': []})).encode()
+                        try:
+                            if phase == 'headers':
+                                time.sleep(3.4)
+                            self.send_response(200)
+                            self.send_header('Content-Length', str(len(body)))
+                            self.end_headers()
+                            if phase == 'body':
+                                for index in range(0, len(body), 20):
+                                    self.wfile.write(body[index:index + 20]); self.wfile.flush()
+                                    time.sleep(0.6)
+                            else:
+                                self.wfile.write(body)
+                        except (BrokenPipeError, ConnectionResetError):
+                            pass
+
+                    def log_message(self, *args):
+                        pass
+
+                server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+                thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+                try:
+                    started = time.monotonic()
+                    report = execute_run([context()], self.config(f'http://127.0.0.1:{server.server_port}/chat'),
+                                         Path(temporary) / 'out', scope='stage', mode='baseline', max_seconds=2)
+                    elapsed = time.monotonic() - started
+                finally:
+                    server.shutdown(); server.server_close(); thread.join()
+                self.assertLess(elapsed, 2.8)
+                self.assertEqual(report['status'], 'unknown')
+                self.assertEqual(len(requests), 1)
 
 
 if __name__ == '__main__':

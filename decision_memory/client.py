@@ -34,6 +34,98 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def _tracked_connection(request, connection_class, *args, **kwargs):
+    connection = connection_class(*args, **kwargs)
+    box = request._memory_exchange
+    box['connections'].append(connection)
+    original = connection.connect
+
+    def connect():
+        if box['cancelled'].is_set():
+            raise TimeoutError('HTTP 总时限已到')
+        original()
+        if box['cancelled'].is_set():
+            connection.close()
+            raise TimeoutError('HTTP 总时限已到')
+
+    connection.connect = connect
+    return connection
+
+
+class DeadlineHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, request):
+        return self.do_open(lambda *a, **kw: _tracked_connection(request, http.client.HTTPConnection, *a, **kw), request)
+
+
+class DeadlineHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, request):
+        return self.do_open(lambda *a, **kw: _tracked_connection(request, http.client.HTTPSConnection, *a, **kw),
+                            request, context=self._context)
+
+
+def deadline_exchange(opener, request, timeout, *, stream, strict_json):
+    """Bound connect/headers/body together, including a continuously dripping peer.
+
+    A daemon owns blocking urllib operations. Deadline expiry shuts down owned
+    sockets and returns execution-unknown immediately, even during DNS lookup.
+    A late connection is closed before the request can be sent.
+    """
+    box = {'connections': [], 'cancelled': threading.Event(), 'response': None}
+    done = threading.Event()
+    request._memory_exchange = box
+
+    def exchange():
+        try:
+            try:
+                response = opener.open(request, timeout=timeout)
+            except urllib.error.HTTPError as error:
+                box['response'] = error
+                try:
+                    error._memory_body = error.read(16_385)
+                finally:
+                    error.close()
+                raise
+            box['response'] = response
+            with response:
+                if box['cancelled'].is_set():
+                    raise TimeoutError('HTTP 总时限已到')
+                if stream:
+                    result = read_stream_completion(response, timeout)
+                else:
+                    result = response.read(8_000_001)
+                    if strict_json and not getattr(response, 'chunked', False):
+                        declared = response.headers.get('Content-Length')
+                        if declared is not None:
+                            try:
+                                expected = int(declared)
+                            except ValueError:
+                                raise http.client.HTTPException('无效响应长度') from None
+                            if expected < 0 or len(result) < expected:
+                                raise http.client.IncompleteRead(b'', max(0, expected - len(result)))
+            box['result'] = result
+        except BaseException as error:
+            box['error'] = error
+        finally:
+            done.set()
+
+    threading.Thread(target=exchange, daemon=True, name='decision-memory-http').start()
+    if not done.wait(timeout):
+        box['cancelled'].set()
+        sockets = [getattr(connection, 'sock', None) for connection in box['connections']]
+        response = box['response']
+        sockets.append(getattr(getattr(getattr(response, 'fp', None), 'raw', None), '_sock', None))
+        for owned in sockets:
+            if owned is not None:
+                try:
+                    owned.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+        raise TimeoutError('HTTP 连接、响应头或正文超过总时限')
+    if 'error' in box:
+        raise box['error']
+    return box['result']
+
+
 @dataclass
 class Config:
     endpoint: str
@@ -269,7 +361,9 @@ def http_error_message(error, sensitive_values) -> str:
 
     payload = {}
     try:
-        raw = error.read(16_385)
+        raw = getattr(error, '_memory_body', None)
+        if raw is None:
+            raw = error.read(16_385)
         if len(raw) <= 16_384:
             payload = json.loads(raw)
     except (ValueError, OSError, http.client.HTTPException):
@@ -295,7 +389,7 @@ class ModelClient:
     def __init__(self, config: Config):
         self.config = config
         self.calls = []
-        self.opener = urllib.request.build_opener(NoRedirect)
+        self.opener = urllib.request.build_opener(NoRedirect, DeadlineHTTPHandler, DeadlineHTTPSHandler)
 
     def headers(self):
         headers = {'Content-Type': 'application/json',
@@ -337,20 +431,12 @@ class ModelClient:
             for attempt in range(self.config.retries + 1):
                 call['http_attempts'] += 1
                 try:
-                    with self.opener.open(request, timeout=self.config.timeout) as response:
-                        if self.config.stream:
-                            envelope = read_stream_completion(response, self.config.timeout)
-                        else:
-                            data = response.read(8_000_001)
-                            if strict_json and not getattr(response, 'chunked', False):
-                                declared = response.headers.get('Content-Length')
-                                if declared is not None:
-                                    try:
-                                        expected_bytes = int(declared)
-                                    except ValueError:
-                                        raise http.client.HTTPException('无效响应长度') from None
-                                    if expected_bytes < 0 or len(data) < expected_bytes:
-                                        raise http.client.IncompleteRead(b'', max(0, expected_bytes - len(data)))
+                    received = deadline_exchange(self.opener, request, self.config.timeout,
+                                                 stream=self.config.stream, strict_json=strict_json)
+                    if self.config.stream:
+                        envelope = received
+                    else:
+                        data = received
                     if not self.config.stream and len(data) > 8_000_000:
                         raise ModelError('模型响应超过 8 MB 上限')
                     call['transport_status'] = 'received'

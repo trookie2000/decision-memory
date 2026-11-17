@@ -116,6 +116,35 @@ class GroundedTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '用户'):
             decode_payload(value, context())
 
+    def test_normalized_unstated_punctuation_survives_full_save_and_replay(self):
+        for text in ('未说明。', '未说明.'):
+            value = reviewed()
+            value['items'][0]['reason']['text'] = text
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                with model_server([(200, completion(proposed())), (200, completion(value))]) as (url, requests):
+                    result = extract_grounded(context(), self.client(url), root / 'run')
+                save_result(root / 'result.json', result, sample=context())
+                saved = read_json(root / 'result.json')
+                validate_saved(saved, context())
+                self.assertEqual(saved['items'][0]['reason']['protocol_normalization']['original_text'], text)
+
+    def test_common_user_attributions_cannot_be_published_from_agent_only(self):
+        for prefix in ('用户已确认', '用户已经明确要求', '用户的建议', '根据用户反馈'):
+            value = proposed()
+            value['items'][1]['reason'] = field(prefix + '每批上限50条。', ['D00004'])
+            with self.subTest(prefix=prefix), tempfile.TemporaryDirectory() as temporary:
+                with model_server([(200, completion(value)), (200, completion(reviewed(value)))]) as (url, requests):
+                    with self.assertRaisesRegex(ValueError, '用户'):
+                        extract_grounded(context(), self.client(url), Path(temporary) / 'run')
+
+    def test_whole_markdown_reports_actual_grounded_field_review(self):
+        from decision_memory.storage import render_markdown
+        result = {'sample_id': 'FAKE', 'scope': 'requirement', 'schema_version': 5, 'mode': 'grounded',
+                  'model': 'fixture', 'nodes': [], 'items': [], 'open_questions': [], 'metrics': {},
+                  'grounding_proof': {'status': 'model_supported'}}
+        self.assertIn('模型已逐字段复核', render_markdown(result))
+
     def test_field_symbol_cannot_borrow_another_fields_source(self):
         stage = index_materials('**用户：**\n沿用 CacheWriter。', '仅缓存展示。', 'design', 'FAKE', 'd.md', 'a.md')
         value = {'items': [{'conclusion': field('仅缓存展示。', ['A00001']),

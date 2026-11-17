@@ -30,6 +30,24 @@ def checked_call(client, system, user, validator):
             user += '\n上一次输出校验失败。重新依据原始材料输出完整 JSON。错误为 ' + str(error)[:600]
 
 
+def extraction_context(sample, mode):
+    return (replace(sample, catalog={key: value for key, value in sample.catalog.items() if key.startswith('A')})
+            if mode == 'artifact-only' else sample)
+
+
+def first_request(sample, mode):
+    """The exact initial system/user pair, shared with all-input preflight."""
+    if mode == 'grounded':
+        from .grounded import EXTRACT, source_packet
+        return EXTRACT, source_packet(sample)
+    from .requirements import RequirementSample
+    context = extraction_context(sample, mode)
+    if isinstance(sample, RequirementSample):
+        from .requirement_pipeline import EXTRACT
+        return EXTRACT, context.prompt_text()
+    return (prompts.DECISIONS if mode == 'verified' else prompts.EXTRACT), context.prompt_text()
+
+
 def validate_decisions(payload, sample):
     decisions = payload.get('decisions')
     if not isinstance(decisions, list):
@@ -85,9 +103,7 @@ def extract(sample: Sample, client: ModelClient, mode: str = 'verified', *, run_
         return extract_grounded(sample, client, run_dir)
     if mode not in MODES:
         raise ValueError('不支持的提取模式')
-    context = sample
-    if mode == 'artifact-only':
-        context = replace(sample, catalog={key: value for key, value in sample.catalog.items() if key.startswith('A')})
+    context = extraction_context(sample, mode)
     sources = context.prompt_text()
     decisions = []
     extraction_input = sources

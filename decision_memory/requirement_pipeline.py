@@ -87,9 +87,8 @@ def extract_requirement(sample, client, mode='verified', *, evidence_audit=None,
         return extract_audited_requirement(sample, client, run_dir)
     if mode not in MODES:
         raise ValueError('不支持的提取模式')
-    context = sample
-    if mode == 'artifact-only':
-        context = replace(sample, catalog={key: value for key, value in sample.catalog.items() if key.startswith('A')})
+    from .pipeline import extraction_context
+    context = extraction_context(sample, mode)
     sources = context.prompt_text()
     result = checked_call(client, EXTRACT, sources, lambda payload: compile_memory(payload, context))
     grounding = None

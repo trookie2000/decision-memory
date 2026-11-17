@@ -10,7 +10,7 @@ from . import __version__
 from .client import ModelClient, ModelError, ModelOutputError
 from .evaluation import digest
 from .grounded import GroundedNeedsReview, extract_grounded, source_packet
-from .pipeline import STAGE_MODES, extract
+from .pipeline import STAGE_MODES, extract, first_request
 from .requirements import RequirementSample, assemble_requirement, discover_requirements, read_requirement_manifest
 from .run_report import render_result_html, render_run_html, render_run_markdown
 from .sources import discover_samples
@@ -135,8 +135,8 @@ def execute_run(samples, config, output, *, scope='stage', mode='grounded', max_
     effective = replace(config, retries=0)
     ModelClient(effective).headers()
     for sample in samples:
-        packet = source_packet(sample) if mode == 'grounded' else sample.prompt_text()
-        if len(packet) > config.max_input_chars:
+        system, user = first_request(sample, mode)
+        if len(system) + len(user) > config.max_input_chars:
             raise ValueError('输入预检超过 max_input_chars，未发送请求')
     from .batch_gate import implementation_signature
     output.mkdir(parents=True, exist_ok=False)

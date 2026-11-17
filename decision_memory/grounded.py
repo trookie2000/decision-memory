@@ -20,7 +20,9 @@ PROTOCOL = 'whole-line-grounded-v1'
 COLUMNS = ('source_id', 'node_id', 'node_order', 'file', 'line', 'role', 'message', 'text')
 FIELDS = ('conclusion', 'reason', 'boundary')
 MAX_ITEMS, MAX_QUESTIONS, MAX_REFS, MAX_EXPANDED_BYTES = 128, 32, 16, 8_000_000
-USER_ATTRIBUTION = re.compile(r'(?:用户|需求方|业务方)(?:明确)?(?:要求|指定|否决|确认|决定|强调|提出|纠正)')
+USER_ATTRIBUTION = re.compile(
+    r'(?:用户|需求方|业务方)(?:\s|已经|已|曾经|曾|明确|最终|直接|再次|反复|之前|后来|特别|也|还|仍|的){0,5}'
+    r'(?:要求|指定|否决|确认|决定|强调|提出|纠正|建议|反馈|表示|希望|认为|同意|拒绝|授权|指示|说)')
 POLICY = {'protocol': PROTOCOL, 'columns': COLUMNS, 'max_items': MAX_ITEMS,
           'max_questions': MAX_QUESTIONS, 'max_refs': MAX_REFS,
           'max_expanded_bytes': MAX_EXPANDED_BYTES, 'user_attribution': USER_ATTRIBUTION.pattern}
@@ -142,7 +144,16 @@ def decode_payload(payload, sample):
 
 def encode_result(result):
     def compact(field):
-        return {'text': field['text'], 'evidence': [ref['source_id'] for ref in field['evidence']]}
+        text = field['text']
+        if 'protocol_normalization' in field:
+            record = field['protocol_normalization']
+            if (not isinstance(record, dict) or set(record) != {'rule', 'original_text'}
+                    or record['rule'] != 'unstated-punctuation-v1' or text != '未说明'
+                    or not isinstance(record['original_text'], str)
+                    or record['original_text'].strip() not in ('未说明。', '未说明.')):
+                raise ValueError('未说明规范化记录无效')
+            text = record['original_text']
+        return {'text': text, 'evidence': [ref['source_id'] for ref in field['evidence']]}
     return {'items': [{**({'kind': item['kind']} if 'kind' in item else {}),
                        **{name: compact(item[name]) for name in FIELDS}} for item in result['items']],
             'open_questions': [compact(q) for q in result['open_questions']]}
