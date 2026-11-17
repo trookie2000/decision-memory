@@ -139,7 +139,8 @@ def run_requirement(args):
     sample = samples[0]
     if action == 'validate':
         validate_saved(saved, sample)
-        return {'requirement_id': sample.sample_id, 'exact_citations': 'passed', 'event_replay': 'passed',
+        return {'requirement_id': sample.sample_id, 'exact_citations': 'passed',
+                'event_replay': 'not_applicable_final_snapshot' if saved.get('schema_version') == 5 else 'passed',
                 'items': len(saved['items']), 'semantic_quality': 'requires_human_review'}, 0
     if action == 'compare':
         from .comparison import run_comparison

@@ -3,6 +3,8 @@ import copy
 import json
 import tempfile
 import unittest
+import io
+from contextlib import redirect_stdout
 from pathlib import Path
 
 from decision_memory.client import Config, ModelClient, ModelError, ModelOutputError
@@ -223,6 +225,17 @@ class GroundedTests(unittest.TestCase):
             self.assertEqual(result['nodes'], list(whole.nodes))
             save_result(root / 'result.json', result, sample=whole)
             validate_saved(read_json(root / 'result.json'), whole)
+            for name in ('dialogue.md', 'artifact.md'):
+                (root / name).write_text('\n'.join(s.text for s in context().catalog.values() if s.file == name), encoding='utf-8')
+            (root / 'manifest.json').write_text(json.dumps({'schema_version': 1, 'requirement_id': 'REQ',
+                'nodes': [{'id': 'N1', 'stage': 'design', 'dialogue': 'dialogue.md', 'artifact': 'artifact.md'}]}), encoding='utf-8')
+            from decision_memory.cli import main
+            captured = io.StringIO()
+            with redirect_stdout(captured):
+                code = main(['requirement', 'validate', '--manifest', str(root / 'manifest.json'),
+                             '--result', str(root / 'result.json')])
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(captured.getvalue())['event_replay'], 'not_applicable_final_snapshot')
             with self.assertRaises(ValueError):
                 validate_saved(read_json(root / 'result.json'), context())
 
