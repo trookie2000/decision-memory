@@ -74,6 +74,8 @@ def render_markdown(result):
              f'模式 `{result["mode"]}`。模型 `{result["model"]}`。', '',
              '引用已通过程序逐字核对。条目语义和覆盖范围仍需人工评审。', '']
     if result.get('scope') == 'requirement':
+        proof = result.get('grounding_review')
+        lines.extend(['字段支持复核：' + ('模型已逐字段复核，仍待人工确认。' if proof else '未执行结构化字段复核。'), ''])
         lines.extend(['节点顺序：' + ' → '.join(node['id'] + '（' + node['stage'] + '）' for node in result['nodes']),
                       '', '以下条目为当前知识，历史版本另列。', ''])
     for item in result['items']:
@@ -111,6 +113,13 @@ def render_markdown(result):
                 for ref in refs:
                     lines.append(f'- `{ref["source_id"]}` · {ref["file"]} 第 {ref["line"]} 行 · {ref["quote"]}')
                 lines.append('')
+    if result.get('scope') == 'requirement' and result.get('grounding_review'):
+        lines.extend(['## 理由未知处理', ''])
+        for check in result['grounding_review']['reason_checks']:
+            lines.extend([f'- `{check["source_id"]}` · {check["quote"]} · `{check["status"]}` · {check["notes"]}'])
+            for ref in check['evidence']:
+                lines.append(f'  - `{ref["source_id"]}` · {ref["file"]} 第 {ref["line"]} 行 · {ref["quote"]}')
+        lines.append('')
     lines.extend(['## 运行记录', '', '```json', json.dumps(result['metrics'], ensure_ascii=False, indent=2), '```', ''])
     return '\n'.join(lines)
 

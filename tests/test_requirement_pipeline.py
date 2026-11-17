@@ -25,6 +25,10 @@ class RequirementPipelineTests(unittest.TestCase):
     def test_verified_reviews_the_sources_and_saves_only_final_replayed_events(self):
         first = {'events': [added()], 'open_questions': []}
         final = {'events': [added(), updated()], 'open_questions': [], 'review_notes': ['后续节点更新了原策略。']}
+        final['grounding_review'] = {'fields': [
+            {'knowledge_key': 'main-retry', 'field': name, 'status': status, 'notes': '依据当前原文逐字段复核。'}
+            for name, status in [('conclusion', 'supported'), ('reason', 'unstated'), ('boundary', 'unstated')]],
+            'reason_checks': []}
         client = Client([first, final])
         result = extract_requirement(requirement(), client, 'verified')
         self.assertEqual(result['items'][0]['conclusion']['text'], '主链路不重试')

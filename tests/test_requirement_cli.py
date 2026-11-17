@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from decision_memory.storage import result_digest
 
 from http_fixture import completion, model_server
 from test_requirement_memory import added, item, updated
@@ -50,6 +51,35 @@ class RequirementCliTests(unittest.TestCase):
             output.write_text(json.dumps(raw, ensure_ascii=False))
             self.assertNotEqual(self.run_cli('requirement', 'validate', '--manifest', manifest,
                                             '--result', output).returncode, 0)
+
+    def test_default_verified_persists_field_review_and_validates_without_network(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest, _ = source_fixtures.RequirementSourceTests().fixture(root)
+            config, output = root / 'model.toml', root / 'result.json'
+            revised = updated()
+            revised['item'] = item('主链路不再重试', 'D.N2.00002', '不再重试')
+            first = {'events': [added(), revised], 'open_questions': []}
+            final = {**first, 'review_notes': [], 'grounding_review': {'fields': [
+                {'knowledge_key': 'main-retry', 'field': name, 'status': status, 'notes': '已核对原文。'}
+                for name, status in [('conclusion', 'supported'), ('reason', 'unstated'), ('boundary', 'unstated')]],
+                'reason_checks': []}}
+            with model_server([(200, completion(first)), (200, completion(final))]) as (endpoint, requests):
+                config.write_text(f'[model]\nendpoint="{endpoint}"\nmodel="fixture"\napi_key_env=""\nretries=0\n')
+                extracted = self.run_cli('requirement', 'extract', '--manifest', manifest,
+                    '--config', config, '--output', output)
+                self.assertEqual(extracted.returncode, 0, extracted.stderr)
+                self.assertEqual(len(requests), 2)
+                self.assertNotIn('不能传给提取器的参考', json.dumps(requests, ensure_ascii=False))
+            saved = json.loads(output.read_text())
+            self.assertEqual(saved['checks']['field_grounding'], 'model_reviewed')
+            checked = self.run_cli('requirement', 'validate', '--manifest', manifest, '--result', output)
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+            saved['grounding_review']['fields'].pop()
+            saved['result_digest'] = result_digest(saved)
+            output.write_text(json.dumps(saved, ensure_ascii=False))
+            rejected = self.run_cli('requirement', 'validate', '--manifest', manifest, '--result', output)
+            self.assertNotEqual(rejected.returncode, 0)
 
     def test_inspect_accepts_coding_nodes_without_model_credentials(self):
         with tempfile.TemporaryDirectory() as directory:
