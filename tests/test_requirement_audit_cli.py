@@ -168,8 +168,45 @@ class AuditCliTests(unittest.TestCase):
             self.assertEqual(state['steps'][1]['status'], 'unknown')
             self.assertTrue((root / 'result.run' / '01-extract-1.json').is_file())
             self.assertFalse(paths[2].exists())
+            self.assertIn('calls', state)
+            self.assertEqual(state['calls'][0]['prompt_tokens'], 100)
+            self.assertEqual(state['calls'][0]['completion_tokens'], 40)
+            self.assertEqual(state['calls'][0]['transport_status'], 'received')
+            self.assertEqual(state['calls'][1]['transport_status'], 'unknown')
+            self.assertEqual(state['steps'][0]['call_numbers'], [1])
+            self.assertEqual(state['steps'][1]['call_numbers'], [2])
             self.assertEqual(self.extract(paths).returncode, 2)
             self.assertEqual(len(requests), 2)
+
+    def test_short_content_length_is_unknown_even_when_the_json_is_valid(self):
+        first, final = replies()
+        with tempfile.TemporaryDirectory() as directory, model_server([
+                (200, ('short-content-length', completion(first))),
+                (200, completion(final))]) as (endpoint, requests):
+            root = Path(directory)
+            paths = self.fixture(root, endpoint)
+            result = self.extract(paths)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(len(requests), 1)
+            self.assertEqual(self.state(root)['status'], 'unknown')
+            self.assertFalse(paths[2].exists())
+
+    def test_structure_repair_cannot_promote_existing_needs_review_to_passed(self):
+        first, final = replies()
+        malformed = copy.deepcopy(final)
+        malformed['evidence_audit']['admission_checks'][0]['basis'] = 'needs_review'
+        malformed['evidence_audit']['coverage_checks'].pop()
+        with tempfile.TemporaryDirectory() as directory, model_server([
+                (200, completion(first)), (200, completion(malformed)),
+                (200, completion(final))]) as (endpoint, requests):
+            root = Path(directory)
+            paths = self.fixture(root, endpoint)
+            result = self.extract(paths)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(len(requests), 3)
+            self.assertFalse(paths[2].exists())
+            draft = json.loads((root / 'result.run' / 'draft.json').read_text())
+            self.assertEqual(draft['validation'], 'invalid')
 
     def test_invalid_json_or_truncated_model_output_does_not_trigger_structure_repair(self):
         invalid = completion('{"events":[')

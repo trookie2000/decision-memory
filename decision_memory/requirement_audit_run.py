@@ -58,6 +58,25 @@ class AuditNeedsReview(RuntimeError):
     pass
 
 
+def _review_markers(payload):
+    """A structure-only repair may preserve uncertainty, never erase it."""
+    audit = payload.get('evidence_audit') if isinstance(payload, dict) else None
+    if not isinstance(audit, dict):
+        return set()
+    result = set()
+    for name, identity in (('admission_checks', 'knowledge_key'), ('coverage_checks', 'unit_id')):
+        rows = audit.get(name)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get(identity), str) or not row[identity]:
+                continue
+            if (row.get('basis') == 'needs_review' or row.get('disposition') == 'needs_review'
+                    or row.get('semantic_coverage') in ('partial', 'unclear')):
+                result.add((name, row[identity]))
+    return result
+
+
 class AuditRun:
     def __init__(self, path, sample, client, requested):
         self.path, self.client = Path(path), client
@@ -78,15 +97,19 @@ class AuditRun:
 
     def persist(self):
         self.state['metrics'] = self.client.metrics()
+        safe_fields = ('http_attempts', 'prompt_tokens', 'completion_tokens', 'seconds', 'status', 'transport_status')
+        self.state['calls'] = [{'number': index, **{key: call.get(key) for key in safe_fields}}
+                               for index, call in enumerate(self.client.calls, 1)]
         self.state['wall_seconds'] = round(time.monotonic() - self.started, 3)
         write_json(self.path / 'state.json', self.state, overwrite=True)
 
     def checked(self, number, name, system, user, validator):
         original = user
+        required_markers = set()
         for attempt in (1, 2):
             filename = f'{number:02d}-{name}-{attempt}.json'
             step = {'step': name, 'attempt': attempt, 'status': 'started', 'provider_execution': 'unknown',
-                    'response_file': filename, 'started_at': time.time()}
+                    'response_file': filename, 'started_at': time.time(), 'call_numbers': []}
             self.state['steps'].append(step)
             self.persist()
             before = len(self.client.calls)
@@ -95,6 +118,7 @@ class AuditRun:
                 payload = self.client.complete(system, user, strict_json=True)
             except BaseException:
                 calls = self.client.calls[before:]
+                step['call_numbers'] = list(range(before + 1, len(self.client.calls) + 1))
                 unknown = bool(calls and calls[-1].get('transport_status') == 'unknown')
                 step.update(status='unknown' if unknown else 'failed', finished_at=time.time())
                 self.state['status'] = step['status']
@@ -102,9 +126,12 @@ class AuditRun:
                 raise
             # Save complete model JSON before interpreting, accepting, or repairing it.
             write_json(self.path / filename, payload)
+            step['call_numbers'] = list(range(before + 1, len(self.client.calls) + 1))
             step.update(status='completed', provider_execution='response_received', validation='pending', finished_at=time.time())
             self.persist()
             try:
+                if not required_markers.issubset(_review_markers(payload)):
+                    raise ValueError('结构修复不能清除已有 needs_review/partial/unclear 待复核标记')
                 result = validator(payload)
             except ValueError as error:
                 step['validation'] = 'invalid'
@@ -112,6 +139,7 @@ class AuditRun:
                 if attempt == 2:
                     write_json(self.path / 'draft.json', {'validation': 'invalid', 'payload': payload})
                     raise
+                required_markers.update(_review_markers(payload))
                 user = (original + '\n上次完整 JSON 存在协议结构错误：' + str(error)
                         + '\n仅修复协议和来源关联，保留已有 needs_review/partial/unclear 标记；不要补造业务结论。'
                         + '\n上次完整回复：' + json.dumps(payload, ensure_ascii=False))

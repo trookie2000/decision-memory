@@ -101,11 +101,11 @@ python3 -m decision_memory requirement validate \
 | `verified` | 先生成事件，再用全部原文复核事件、逐字段支持和明确的理由未知 | 2 |
 | `artifact-only` | 只向模型提供各节点产物 | 1 |
 
-每步格式或引用错误最多修复一次，HTTP 重试沿用模型配置。实际调用和 token 用量保存在 `calls`、`metrics` 中。阶段级 `verified` 继续使用原来的 3 步流程。
+未开启审计时，每步格式或引用错误最多修复一次，HTTP 重试沿用模型配置。实际调用和 token 用量保存在 `calls`、`metrics` 中。阶段级 `verified` 继续使用原来的 3 步流程。
 
 结果中的 `items` 只包含当前有效知识，每条都含结论、理由、边界及逐字段证据。来源编号形如 `D.N1.00002` 或 `A.N2.00003`，分别表示节点中的对话行或产物行。证据保存文件名、原始行号及消息编号，模型输入中的原文索引还标注发言角色。
 
-需求级新结果使用 `schema_version=2`。默认 `verified` 的第二次调用还返回 `grounding_review`，逐项说明当前知识的结论、理由和边界是否得到原文支持。程序检查判定与知识编号一一对应，拒绝缺项、重复项和残留的不支持判定。`baseline` 和 `artifact-only` 保持一次正常调用，`checks.field_grounding` 为 `not_reviewed`。
+未开启审计的需求级新结果使用 `schema_version=2`。默认 `verified` 的第二次调用还返回 `grounding_review`，逐项说明当前知识的结论、理由和边界是否得到原文支持。程序检查判定与知识编号一一对应，拒绝缺项、重复项和残留的不支持判定。`baseline` 和 `artifact-only` 保持一次正常调用，`checks.field_grounding` 为 `not_reviewed`。
 
 理由可以部分已知。例如“原阈值过高，所以从 80 件降到 25 件”，只说明为什么降低，不说明为什么恰好选 25 件。原文明确具体取值原因未说明时，当前 reason 应同时保留已知解释和具体未知，并引用各自依据。只有“原因未说明”的引文不能支持另一段复杂业务理由。
 
@@ -131,6 +131,60 @@ python3 -m decision_memory requirement validate \
 除新增外，`previous` 必须指向同一 `knowledge_key` 的最新事件，包括合并或失效事件。失效后可用 `update` 重新确认；合并只能作用于当前有效知识。新理由或新边界需要 `update`。
 
 不同业务范围的规则可以共存。例如主链路不重试、旁路允许重试，应使用两个知识编号。未确认提议进入未决项。代码不凭文字相似度自动删除规则。
+
+## 主动开启证据与覆盖审计
+
+`--evidence-audit v1` 在第二次复核中增加角色准入和原文候选核查，正常仍调用模型两次。它只支持 `requirement extract --mode verified`，与其他模式同时使用时在请求前报错。现有 compare、battle 和 series 命令不接入此开关。
+
+```bash
+python3 -m decision_memory requirement extract \
+  --manifest examples/requirement-cache/manifest.json \
+  --config config.local.toml --mode verified --evidence-audit v1 \
+  --output runs/requirement-cache-audit/result.json
+
+python3 -m decision_memory requirement validate \
+  --manifest examples/requirement-cache/manifest.json \
+  --result runs/requirement-cache-audit/result.json
+```
+
+审计结果使用 schema 3，增加 `evidence_audit`。成功后生成 JSON、Markdown、自包含的 `result.audit.html`，并保留 `result.run/` 中的逐步记录。离线 validate 重建来源、候选、位置和全部关联，不调用模型。旧 schema 1、2 继续按原协议读取。
+
+程序核对每条现行知识是否引用真实用户或产物。若依据来自 Agent 提议和用户随后一句“对”，必须同时保存提议和确认，核对角色及顺序。未知角色保留未知。模型负责判断用户究竟确认了什么，程序不证明业务语义。
+
+候选清单包含产物正文，以及用户或未知角色对话中命中显式约束、修改、否定或未决标记的片段。复核者须逐项关联到当前知识、真实历史或未决项，或者说明排期、格式等排除原因。规则有版本，首版最多 256 个候选；超限明确失败，不截断。
+
+同一行中的业务规则和排期按片段分别核查。引文位置由程序按 Unicode 码点计算；重复短引文必须扩大到唯一片段。扩大引文的额外上下文可用业务焦点区分，不能把纯标点当成焦点来绕过核查。
+
+位置相交只说明引用相关。是否完整表达对象、数值、条件和范围，由模型另作 `semantic_coverage` 判断。候选全部处置也不等于真实召回完整，隐含规则和未命中标记的对话仍可能遗漏。
+
+| 执行结果 | 输出与后续处理 |
+|---|---|
+| 审计通过 | CLI 退出 0，发布结果 JSON 和报告；语义效果仍须独立评测 |
+| 结构有效但 needs_review | CLI 退出 2，保存 `result.run/draft.json`，不发布成功结果 |
+| 完整 JSON 结构或引用错误 | 每步只修复一次；仍无效时保存无效草稿并退出 2 |
+| HTTP 错误、截断、拒绝或无效 JSON | 保存已知调用状态并退出 2，不自动重试 |
+| 超时或断流 | 保存 unknown；已完成的前一步保留，不自动重发 |
+| 进程突然退出 | 若步骤仍为 started，且没有完整响应回执，provider_execution 保持 unknown；不能认定没调用或没计费 |
+
+审计模式强制有效配置 `retries=0`，TOML 保持原样。仅完整接收的有效 JSON 可进入结构修复，最多发起四次请求。旧模式的 HTTP 重试策略保持原样。
+
+结构修复须保留已有 needs_review、partial 或 unclear 标记。修复回复擅自清除这些标记时，程序拒绝发布通过结果。
+
+`result.run/state.json` 保存实现和配置摘要、逻辑步骤、逐次调用、HTTP 尝试、token、费用可确认性及墙钟时间，不保存凭证值或请求头。后续调用失败时，前一步已确认的用量和耗时仍可从 `calls` 读取。总用量缺失时保持未知，不记为零。
+
+同名 run 目录或 HTML 已存在时，extract 会拒绝执行，包括去掉审计开关的命令。首版没有自动续跑；先检查原回执和实际任务状态。未知请求未经核实，不换目录盲目重发。
+
+## 使用真实历史会话评测
+
+本机历史会话可作为真实输入，当前没有自动导入或自动训练功能。先选 3 个材料完整的已结束需求，按“项目＋完整需求”归组，配齐最终文档或代码版本。一个需求跨多个会话时，这些会话保持在同一组。
+
+保留用户与助手的业务讨论及纠偏过程。系统提示、开发者指令和内部工具元数据不混入业务对话；工具生成的文档和代码另作产物核对。实际导出格式仍须先读取本机结构，不能把截图中的表名当成稳定接口。
+
+先按既有 manifest 准备有序快照，再核对固定参考中的结论、理由、范围和逐字依据。原会话、内部产物和本地追溯映射留在本地；必要时以脱敏快照作为实际评测输入，并保存副本摘要。
+
+对相同输入分别运行当前 verified 和带审计的 verified，以独立判卷比较准确率、完整参考覆盖、错误准入、引用支持和总成本。候选完成度、调用成功和单元测试数量均不替代质量分数。
+
+同一需求的全部会话只能进入开发集或留出验收集中的一边。现有六例已经用于调试，继续作为开发回归；新验收需求一旦用于改代码，就重新归入开发集。
 
 ## 比较质量和成本
 

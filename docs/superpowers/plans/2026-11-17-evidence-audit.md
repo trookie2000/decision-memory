@@ -46,11 +46,11 @@
 - coverage row 用 unit_id/disposition/semantic_coverage/targets/exclusion_reason/notes；排除原因限 schedule/format/wiring/chatter，其他处置 exclusion_reason=null。
 - 显式归因检查用 knowledge_key/field/evidence/notes，须引用该字段实际 user 证据。
 
-- [ ] 写失败用例：重复引文、码点坐标、未知角色、先后倒置、短确认冒充直接规则、缺项、数值短引文 partial、焦点分离、全局排除冲突、历史/未决/未知目标、候选超限。
-- [ ] Run: `.venv/bin/python -m unittest discover -s tests -p test_requirement_audit.py -q`。Expected: 新模块缺失使新增用例失败。
-- [ ] 实现上述函数，语义 full 为模型判断，程序只检查关联和清单；需要复核标记在完整结构校验后产生。
-- [ ] 重跑同命令。Expected: 新增用例全部通过。
-- [ ] Weaver 核对后提交这组源码与测试。
+- [x] 写失败用例：重复引文、码点坐标、未知角色、先后倒置、短确认冒充直接规则、缺项、数值短引文 partial、焦点分离、全局排除冲突、历史/未决/未知目标、候选超限。
+- [x] Run: `.venv/bin/python -m unittest discover -s tests -p test_requirement_audit.py -q`。Expected: 新模块缺失使新增用例失败。
+- [x] 实现上述函数，语义 full 为模型判断，程序只检查关联和清单；需要复核标记在完整结构校验后产生。
+- [x] 重跑同命令。Expected: 新增用例全部通过。
+- [x] Weaver 核对后提交这组源码与测试。
 
 ## Task 2: 持久调用、CLI、保存与离线重放
 
@@ -73,11 +73,11 @@
 - schema 3 离线验证重建审计；schema 1、2 仍按原协议读取，不接受冒充旧 schema 的审计数据。
 - ModelClient 为调用记录增加 transport_status，不保存头部或凭证；旧重试策略不改变，新路径覆盖 retries=0。
 
-- [ ] 写失败的真实本机 HTTP 集成用例：成功两次、结构修复、混合错误、needs_review、不完整 JSON、HTTP 429/503、断流、已有 run、模式冲突、超限前零请求、二次请求超预算、离线篡改、HTML 转义、旧模式兼容。
-- [ ] Run: `.venv/bin/python -m unittest discover -s tests -p test_requirement_audit_cli.py -q`。Expected: 开关/接口尚未支持，新增用例失败。
-- [ ] 实现调用与保存，所有响应先存后验；异常分类不进入 checked_call 的广义 ValueError 重试。
-- [ ] 重跑同命令。Expected: 所有集成用例通过，HTTP 尝试数与回执一致。
-- [ ] Weaver 核对后提交源码与集成测试。
+- [x] 写失败的真实本机 HTTP 集成用例：成功两次、结构修复、混合错误、needs_review、不完整 JSON、HTTP 429/503、断流、已有 run、模式冲突、超限前零请求、二次请求超预算、离线篡改、HTML 转义、旧模式兼容。
+- [x] Run: `.venv/bin/python -m unittest discover -s tests -p test_requirement_audit_cli.py -q`。Expected: 开关/接口尚未支持，新增用例失败。
+- [x] 实现调用与保存，所有响应先存后验；异常分类不进入 checked_call 的广义 ValueError 重试。
+- [x] 重跑同命令。Expected: 所有集成用例通过，HTTP 尝试数与回执一致。
+- [x] Weaver 核对后提交源码与集成测试。
 
 ## Task 3: 使用说明与整体验证
 
@@ -88,8 +88,16 @@
 
 **Interfaces:** 交付可复制命令、输出说明、明确失败状态和程序/模型责任。
 
-- [ ] 更新说明：主动开关、schema 3、草稿/检查点、拒绝自动重试、语义判定限制及真实数据试点步骤。
-- [ ] Run: `.venv/bin/python -m unittest discover -s tests -q`。Expected: 完整测试全部通过。
-- [ ] Run: `git diff --check`。Expected: 无空格错误。
-- [ ] 独立评审整个本轮差异，修复重要问题并以失败回归验证；不发起付费模型回归、不复跑执行未知的 T03。
-- [ ] Weaver 核对后提交说明及计划。实际测试、采集和推送状态据实交付。
+- [x] 更新说明：主动开关、schema 3、草稿/检查点、拒绝自动重试、语义判定限制及真实数据试点步骤。
+- [x] Run: `.venv/bin/python -m unittest discover -s tests -q`。Expected: 完整测试全部通过。
+- [x] Run: `git diff --check`。Expected: 无空格错误。
+- [x] 独立评审整个本轮差异，修复重要问题并以失败回归验证；不发起付费模型回归、不复跑执行未知的 T03。
+- [x] Weaver 核对后提交说明及计划。实际测试、采集和推送状态据实交付。
+
+## 验证记录
+
+2026-11-17：基线 226 项通过；最终完整回归 263 项通过，耗时 79.351 s。新增用例包含 20 项确定性审计和 17 项本机 HTTP CLI 集成测试。
+
+独立评审发现的 Content-Length 短读、逐调用用量丢失均已复现并修复。另补了结构修复清除待复核标记的失败回归。三个问题均观察到 RED→GREEN，随后完整套件通过。
+
+本轮未执行付费模型试点，未读取历史会话正文。真实需求上的分数收益仍待固定参考对照，不能从测试数量推断。

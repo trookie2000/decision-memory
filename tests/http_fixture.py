@@ -27,6 +27,15 @@ def model_server(responses):
                 self.wfile.flush()
                 self.close_connection = True
                 return
+            if isinstance(payload, tuple) and payload[0] == 'short-content-length':
+                body = json.dumps(payload[1]).encode()
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body) + 100))
+                self.end_headers()
+                self.wfile.write(body)
+                self.wfile.flush()
+                self.close_connection = True
+                return
             self.send_header('Content-Type', 'application/json')
             self.send_header('Retry-After', '0')
             self.end_headers()

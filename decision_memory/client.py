@@ -316,6 +316,15 @@ class ModelClient:
                             envelope = read_stream_completion(response, self.config.timeout)
                         else:
                             data = response.read(8_000_001)
+                            if strict_json and not getattr(response, 'chunked', False):
+                                declared = response.headers.get('Content-Length')
+                                if declared is not None:
+                                    try:
+                                        expected_bytes = int(declared)
+                                    except ValueError:
+                                        raise http.client.HTTPException('无效响应长度') from None
+                                    if expected_bytes < 0 or len(data) < expected_bytes:
+                                        raise http.client.IncompleteRead(b'', max(0, expected_bytes - len(data)))
                     if not self.config.stream and len(data) > 8_000_000:
                         raise ModelError('模型响应超过 8 MB 上限')
                     call['transport_status'] = 'received'
