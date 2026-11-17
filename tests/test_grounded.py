@@ -134,7 +134,8 @@ class GroundedTests(unittest.TestCase):
             value = proposed()
             value['items'][1]['reason'] = field(prefix + '每批上限50条。', ['D00004'])
             with self.subTest(prefix=prefix), tempfile.TemporaryDirectory() as temporary:
-                with model_server([(200, completion(value)), (200, completion(reviewed(value)))]) as (url, requests):
+                with model_server([(200, completion(value)), (200, completion(reviewed(value))),
+                                   (200, completion(reviewed(value)))]) as (url, requests):
                     with self.assertRaisesRegex(ValueError, '用户'):
                         extract_grounded(context(), self.client(url), Path(temporary) / 'run')
 

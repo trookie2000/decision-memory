@@ -14,6 +14,7 @@ from .client import ModelError
 from .evaluation import digest
 from .field_grounding import validate_literal_grounding
 from .requirements import RequirementSample
+from .source_hints import HINT_POLICY, build_review_hints
 from .validation import validate_result
 
 PROTOCOL = 'whole-line-grounded-v1'
@@ -38,6 +39,7 @@ Agent 未被采纳的建议不能当结论；原文明示的既有系统事实�
 一条讲一个可独立复用的机制，把该机制的失败、时效、兼容性、范围和理由写完整；相关条款可跨行引用。
 只给原文支持的理由和边界。不能从“在X前提下可用”反推没有证据的“所有非X均禁止”。
 不要声称“产物未写/仅对话提供”而只引用正向内容。不要把工程常识、推测原因或未定项写成事实。
+实现名称严格按原文拼写。多个名称用顿号或列表分开，不用斜杠合并名称，不省略共同前缀。
 同一字段的全部陈述必须被该字段自己的来源支持；结论、理由、边界之间不能借证。
 明确声称用户要求、否决或确认时必须在该字段引用真实 user 行；否决理由不能只引用被否定提议。
 已知解释与剩余未知可共存：保留有证据的解释，同时在 open_questions 保存材料明确未确认的部分。
@@ -63,8 +65,12 @@ REVIEW = EXTRACT + '''现在独立复核候选，重新完整阅读所有原文�
 {"item_index":1,"field":"conclusion|reason|boundary","status":"supported|unstated|unsupported","notes":"核对具体陈述和自身来源的依据"}。
 未说明字段只能为 unstated；其他字段为 supported 或 unsupported。有真实不确定且无法从原文修订，
 必须保留 unsupported 并解释，不能为了通过结构检查改成 supported。程序会保存待复核草稿。
+review_hints 是程序从本次全部原文检索的来源编号建议，不保证语义支持，不是参考答案。
+逐项处理 missing_symbols 和常见用户归因。absent_from_entire_input 的名字不得保留为自造标识符，
+按原文真实名称修订该规则；不能只为了检查通过删掉业务知识。核对建议来源以及全文，分别补齐各字段。
+检查尚未引用的产物候选是否提供遗漏的规则、理由或边界；不用为了覆盖编号强行增加条目。
 '''
-PROMPT_HASH = hashlib.sha256((EXTRACT + REVIEW + digest(POLICY)).encode()).hexdigest()
+PROMPT_HASH = hashlib.sha256((EXTRACT + REVIEW + digest(POLICY) + digest(HINT_POLICY)).encode()).hexdigest()
 
 
 class GroundedNeedsReview(ModelError):
@@ -88,7 +94,7 @@ def _literal(items):
         'memory_index': [{'knowledge_key': item['id']} for item in items]})
 
 
-def decode_payload(payload, sample):
+def decode_payload(payload, sample, *, enforce_bindings=True):
     if not isinstance(payload, dict) or not isinstance(payload.get('items'), list) or not isinstance(payload.get('open_questions'), list):
         raise ValueError('需要 items/open_questions 数组')
     if len(payload['items']) > MAX_ITEMS or len(payload['open_questions']) > MAX_QUESTIONS:
@@ -126,7 +132,7 @@ def decode_payload(payload, sample):
             if size > MAX_EXPANDED_BYTES:
                 raise ValueError('完整整行证据超过8 MB，不得截断或缩写原文')
             evidence.append({'source_id': key, 'quote': source.text})
-        if USER_ATTRIBUTION.search(value['text']) and not any(
+        if enforce_bindings and USER_ATTRIBUTION.search(value['text']) and not any(
                 sample.catalog[key].role == 'user' for key in value['evidence']):
             raise ValueError('明确用户归因必须引用该字段自己的真实用户来源')
         return {'text': value['text'], 'evidence': evidence}
@@ -138,7 +144,8 @@ def decode_payload(payload, sample):
         expanded['items'].append(entry)
     expanded['open_questions'] = [expand(q) for q in payload['open_questions']]
     result = validate_result(expanded, sample)
-    _literal(result['items'])
+    if enforce_bindings:
+        _literal(result['items'])
     return result
 
 
@@ -208,8 +215,10 @@ def extract_grounded(sample, client, run_dir):
         client.config = replace(requested, retries=0)
         sources = source_packet(sample)
         run = AuditRun(run_dir, sample, client, requested.public(), prompt_hash=PROMPT_HASH)
-        first = run.checked(1, 'extract', EXTRACT, sources, lambda p: decode_payload(p, sample))
-        reviewed = run.checked(2, 'review', REVIEW, sources + '\n候选 ' + json.dumps(encode_result(first), ensure_ascii=False),
+        first = run.checked(1, 'extract', EXTRACT, sources, lambda p: decode_payload(p, sample, enforce_bindings=False))
+        review_input = sources + '\n候选 ' + json.dumps(encode_result(first), ensure_ascii=False)
+        review_input += '\nreview_hints ' + json.dumps(build_review_hints(first, sample), ensure_ascii=False)
+        reviewed = run.checked(2, 'review', REVIEW, review_input,
                                lambda p: review_payload(p, sample))
         whole = isinstance(sample, RequirementSample)
         result = {**reviewed, 'schema_version': 5, 'extraction_protocol': PROTOCOL,
