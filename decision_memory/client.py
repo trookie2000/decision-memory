@@ -63,6 +63,19 @@ class DeadlineHTTPSHandler(urllib.request.HTTPSHandler):
                             request, context=self._context)
 
 
+def interrupt_socket(owned):
+    """Interrupt TLS through a duplicate raw descriptor, without SSL object locks."""
+    raw = None
+    try:
+        raw = socket.socket(fileno=os.dup(owned.fileno()))
+        raw.shutdown(socket.SHUT_RDWR)
+    except (OSError, ValueError):
+        pass  # A completed/closed transport needs no interruption.
+    finally:
+        if raw is not None:
+            raw.close()
+
+
 def deadline_exchange(opener, request, timeout, *, stream, strict_json):
     """Bound connect/headers/body together, including a continuously dripping peer.
 
@@ -72,6 +85,7 @@ def deadline_exchange(opener, request, timeout, *, stream, strict_json):
     """
     box = {'connections': [], 'cancelled': threading.Event(), 'response': None}
     done = threading.Event()
+    monotonic_deadline, wall_deadline = time.monotonic() + timeout, time.time() + timeout
     request._memory_exchange = box
 
     def exchange():
@@ -109,17 +123,25 @@ def deadline_exchange(opener, request, timeout, *, stream, strict_json):
             done.set()
 
     threading.Thread(target=exchange, daemon=True, name='decision-memory-http').start()
-    if not done.wait(timeout):
+    while not done.is_set():
+        remaining = min(monotonic_deadline - time.monotonic(), wall_deadline - time.time())
+        if remaining <= 0:
+            break
+        done.wait(min(remaining, .1))
+    if (not done.is_set() or time.monotonic() > monotonic_deadline or time.time() > wall_deadline):
         box['cancelled'].set()
-        sockets = [getattr(connection, 'sock', None) for connection in box['connections']]
-        response = box['response']
-        sockets.append(getattr(getattr(getattr(response, 'fp', None), 'raw', None), '_sock', None))
-        for owned in sockets:
-            if owned is not None:
-                try:
-                    owned.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
+
+        def interrupt():
+            # Buffered IO properties or transport cleanup can hold their own
+            # locks. None of that work may delay the deadline caller.
+            for connection in list(box['connections']):
+                if owned := getattr(connection, 'sock', None):
+                    interrupt_socket(owned)
+            response = box['response']
+            if owned := getattr(getattr(getattr(response, 'fp', None), 'raw', None), '_sock', None):
+                interrupt_socket(owned)
+
+        threading.Thread(target=interrupt, daemon=True, name='decision-memory-cancel').start()
         raise TimeoutError('HTTP 连接、响应头或正文超过总时限')
     if 'error' in box:
         raise box['error']
@@ -250,10 +272,7 @@ def read_stream_completion(response, timeout):
 
     def expire():
         expired.set()
-        try:
-            stream_socket.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass  # A just-completed response may already have closed its socket.
+        interrupt_socket(stream_socket)
 
     timer = threading.Timer(timeout, expire)
     timer.daemon = True

@@ -8,6 +8,9 @@ Python 3.11+。运行时仅使用标准库。默认输出 JSON 和 Markdown，�
 一次生成 JSON、Markdown、HTML 和真实调用回执；点击 HTML 来源可查看原文。完整需求改用 `--scope requirement`。
 新入口的 grounded 模式正在独立验收，模型复核不代表正式质量分。配置、失败处理和报告说明见 [评委本地运行](docs/judge-run.md)。
 
+第一轮完整需求自测为 28/32 完整参考覆盖、22/22 条内容正确、来源抽查 9/10。
+单阶段诊断和新材料失败另列。修复版本的 327 项本地测试通过；远端复测遇两次未知调用后已停止，不能借用旧分数。详见 [grounded 自测](docs/grounded-evaluation.md) 与 [方案](docs/solution.md)。
+
 ## 当前验证范围
 
 新增 `requirement inspect/extract/validate/compare`，可通过清单读取分析、设计、编码等节点，或组合现有数据集中的分析与设计材料。需求级 `verified` 正常调用 2 次模型；旧阶段流程保持原行为。整需求协调器已接入原员工出题与 v2 分轨评分，批次先冻结所有题目，再比较整需求与逐节点方法。工程验证与真实模型效果分别记录，操作说明见 [完整需求提取](docs/requirement-memory.md) 和 [整需求六例对照](docs/coordinator.md#整需求的六例对照)。
