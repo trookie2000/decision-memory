@@ -62,6 +62,28 @@ class FieldGroundingTests(unittest.TestCase):
                 value['items'][0]['conclusion']['text'] = '实现使用 ' + symbol
                 validate_literal_grounding(value)
 
+    def test_longer_identifier_or_path_cannot_support_a_shorter_symbol(self):
+        for symbol, quoted in (('mergeFieldUnit', 'mergeFieldUnitLegacy'),
+                               ('config.unitVO', 'config.unitVOExtra'),
+                               ('@org/dashboard-kit', '@org/dashboard-kit-extra'),
+                               ('src/widget/actions.ts', 'src/widget/actions.ts.map')):
+            with self.subTest(symbol=symbol):
+                value = compiled(context())
+                value['items'][0]['conclusion'] = {'text': '仅调用 ' + symbol,
+                    'evidence': [{'source_id': 'A.N1.00001', 'quote': '仅调用 ' + quoted + '。'}]}
+                with self.assertRaisesRegex(ValueError, '字段自身引文'):
+                    validate_literal_grounding(value)
+                suggestions = field_evidence_candidates(value, context())
+                self.assertEqual(suggestions[0]['missing_symbols'], [symbol])
+
+    def test_pascal_case_and_acronym_prefixed_symbols_are_checked(self):
+        for symbol in ('MergeFieldUnit', 'WidgetFactory', 'HTTPWidget'):
+            with self.subTest(symbol=symbol):
+                value = compiled(context())
+                value['items'][0]['conclusion']['text'] = '通过 ' + symbol + ' 改造'
+                with self.assertRaisesRegex(ValueError, symbol):
+                    validate_literal_grounding(value)
+
     def test_retrieval_is_bounded_stable_and_does_not_mutate_inputs(self):
         ctx = context()
         value = compiled(ctx)

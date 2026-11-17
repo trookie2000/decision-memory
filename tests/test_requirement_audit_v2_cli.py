@@ -146,11 +146,16 @@ class AuditV2CliTests(unittest.TestCase):
             paths = self.fixture(root, endpoint)
             self.assertEqual(self.extract(paths).returncode, 0)
             saved = json.loads(paths[2].read_text())
-            for change in ('delete', 'proof', 'schema', 'format', 'quote'):
+            for change in ('delete', 'proof', 'schema', 'compound_downgrade', 'format', 'quote'):
                 modified = copy.deepcopy(saved)
                 if change == 'delete': modified.pop('literal_grounding')
                 if change == 'proof': modified['literal_grounding']['fields'] = []
                 if change == 'schema': modified['schema_version'] = 3
+                if change == 'compound_downgrade':
+                    modified.update(schema_version=3, evidence_audit_version='v1')
+                    for key in ('model_evidence_format', 'source_format', 'literal_grounding'):
+                        modified.pop(key)
+                    modified['checks'].pop('literal_grounding')
                 if change == 'format': modified['model_evidence_format'] = 'handwritten'
                 if change == 'quote':
                     # Rebuild every event-derived field: codec check must still reject a non-ID fragment.

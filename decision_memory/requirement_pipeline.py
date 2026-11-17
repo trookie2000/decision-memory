@@ -163,6 +163,12 @@ def validate_requirement_saved(result, sample, client=None, mode=None):
         raise ValueError('旧 schema 不能携带新审计协议')
     if schema < 4 and any(k in result for k in ('model_evidence_format', 'source_format', 'literal_grounding')):
         raise ValueError('旧 schema 不能携带编号证据协议')
+    if schema < 4:
+        from .requirement_audit_v2 import AUDIT_V2_PROMPT_HASH
+        checks = result.get('checks')
+        if (result.get('prompt_hash') == AUDIT_V2_PROMPT_HASH
+                or isinstance(checks, dict) and 'literal_grounding' in checks):
+            raise ValueError('编号证据身份不能降级为旧 schema')
     if schema in (2, 3, 4):
         expected = 'model_reviewed' if saved_mode == 'verified' else 'not_reviewed'
         checks = result.get('checks')
@@ -178,6 +184,10 @@ def validate_requirement_saved(result, sample, client=None, mode=None):
             raise ValueError('未复核模式不能携带字段复核结果')
     if schema in (3, 4):
         from .requirement_audit import validate_evidence_audit
+        if schema == 3:
+            from .requirement_audit_run import AUDIT_PROMPT_HASH
+            if result.get('prompt_hash') != AUDIT_PROMPT_HASH:
+                raise ValueError('v1 审计提示与协议身份不匹配')
         if (saved_mode != 'verified' or audit_version != ('v2' if schema == 4 else 'v1')
                 or result['checks'].get('evidence_audit') != 'model_reviewed_program_checked'):
             raise ValueError('审计模式和状态不匹配')
