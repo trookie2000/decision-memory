@@ -4,11 +4,11 @@
 
 ## 入口与授权范围
 
-固定测试群 `7419479552888854`，出题机器人 `10120718088572`，评审机器人 `10664440173316`。配置中更换这些目标会直接拒绝，新增授权范围需单独设计和确认。
+测试目标由本机 `battle.local.toml` 指定，群和两位员工均使用 KIM 数字 ID。运行时只使用用户已授权的目标；更换群或员工需要对应授权。当前会话沿用原测试群和原两位员工。
 
 Mario MCP 通过本机 `http://127.0.0.1:38399/mcp` 连接。每个新进程实际读取工具和当前用户技能清单，选择 `kim-skill-assistant-cc/codex`。派发助手只发送原文及结构化 mention，不负责出题或评判。单 case 的默认配置为 `dispatch_context = "task"`，后续调用复用回执 `_meta.threadId`。连续批次使用 `operation`，每次派发采用独立上下文，将真实 threadId 绑定到具体操作。两种模式都不使用回复正文里可能混淆的群聊 ID。
 
-Docs 使用公开的 `ks-cli doc word create/fetch`，读取经过已安装的 docs-shuttle capture wrapper。不要手动传 token、恢复旧登录态或修改共享权限。先按 docs-shuttle 的官方预检规则确认依赖版本。复制 `battle.example.toml` 为 `battle.local.toml`（已被 git 忽略），填写测试群和两位员工的 KIM 数字 ID（不是 Mario 页面上的员工 ID）及本机 ks-cli 路径。
+Docs 默认使用公开的 `kcli docs-cli word +create/+fetch`，读取经过已安装的 docs-shuttle capture wrapper。不要手动传 token、恢复旧登录态或修改共享权限。先按 docs-shuttle 的官方预检规则确认依赖版本。复制 `battle.example.toml` 为 `battle.local.toml`（已被 git 忽略），填写测试群和两位员工的 KIM 数字 ID（不是 Mario 页面上的员工 ID）。`docs_cli` 指定 kcli 路径；旧适配器保留 `docs_cli=None` 的 Python 配置入口，正常新任务使用公开 CLI。
 
 只读自检：
 
@@ -70,6 +70,41 @@ Docs 使用公开的 `ks-cli doc word create/fetch`，读取经过已安装的 d
 默认每次运行最多 7200 秒，可用 `series start --max-seconds` 设置 1 至 86400 秒。达到时限后保存进度，恢复时继续原批次。未知发送、未知创建、权限或模型错误会标记 `blocked` 并保留具体原因；不会靠重复发消息或重复付费调用强行继续。
 
 批次目录中的 `series-state.json`、`manifest.json` 和模型配置摘要用于恢复核对；`cases/<编号>/` 保存完整单 case 记录；`summary.json` 与 `report.md` 为实时汇总，`background.log` 记录推进事件。清单和模型配置改变后应使用新目录。聊天会话结束不影响后台进程；关闭电脑或终止进程后需重新恢复，没有安装开机自启或远程控制服务。
+
+## 整需求的六例对照
+
+新清单 [requirement-cases.json](../examples/requirement-cases.json) 包含 6 个完全虚构的需求说明。它们是出题要求，尚未生成的试题和参考不能算作评测结果。每个 case 使用 `stage=requirement`，可包含 analysis、design、coding 或 testing 节点。
+
+先确认现有两位员工能够在原群独立接单。`battle doctor` 只检查工具、技能和文档读取，不能证明员工执行正常。发送助手完成、收到消息回执或返回不透明卡片，均不能代替员工成功回传。健康检查未确认时不要启动正式批次。
+
+```bash
+.venv/bin/decision-memory series start \
+  --config battle.local.toml \
+  --model-config config.local.toml \
+  --manifest examples/requirement-cases.json \
+  --mode baseline --max-seconds 14400 \
+  --output runs/requirement-six-new
+```
+
+整需求批次按两遍运行。prepare 依次完成 6 例出题、审题及必要修订；全部通过后写入 `frozen-batch.json`，再进入 evaluate。争议题保留人工确认状态并阻止整批提取。冻结记录绑定原文、参考分类、模型配置和实现文件；更换代码或配置需要新实验目录。
+
+出题人回传 `requirement.json`、`gold.json` 和公共身份块。原始节点正文独立保存到 `inputs/<编号>/nodes/`，清单保存为 `manifest.json`。gold 将 `decision` 与 `uncertainty` 分开；证据必须准确指向指定节点的同一原文行。早期问题后来解决时，不算最终未知参考。
+
+evaluate 对同一组原文执行两种方法。whole 使用需求级算法和给定 mode；per_node 使用旧算法逐节点 baseline，然后原样拼接，仅重编 ID 和来源编号。比较过程不删除重复、过期答案或旧未决项，不替 baseline 改答案。逐节点算法入口可读取编码、测试节点，原单阶段 CLI 枚举保持不变。
+
+比较结果和各方法的原始预测均保留。评分任务只显示随机且持久的 A/B 标签，按 v2 分别填写条目、未决项和参考覆盖判定。每种方法都有自己的视图摘要，整体任务还绑定原始比较包。隐藏方法名只减少标签偏好，不能证明模型评审等同人工盲评。
+
+```bash
+.venv/bin/decision-memory series status --output runs/requirement-six-new
+.venv/bin/decision-memory series stop --output runs/requirement-six-new
+.venv/bin/decision-memory series resume --output runs/requirement-six-new
+```
+
+status 分开返回已冻结数、已结束数和完整评分数。主覆盖率只计 full，未知信息单列。整批没有完整评分时，总体质量比率为空；费用单价未配置时也为空。已评分样本的成本汇总不包含费用未知的失败调用。
+
+已有完整预测在恢复时只校验和接回。失败或未知调用不会自动重跑付费步骤；确认原因后，显式 `--retry-extraction` 开始新尝试，原失败和部分成功结果仍保留。不要删除输出或修改旧状态来“重新开始”。
+
+旧阶段 battle/series 继续使用原 v1 协议，旧六例无需恢复，也不将旧分数迁移成新指标。
 
 ## 恢复与异常
 

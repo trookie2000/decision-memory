@@ -41,6 +41,8 @@ class BattleConfig:
     dispatch_context: str = 'task'
     # Conservative project policy, deliberately NOT a KIM API limit claim.
     notification_max_bytes: int = 4000
+    # Use the current public Docs CLI. None is an explicit legacy adapter opt-in.
+    docs_cli: str | None = 'kcli'
 
     def __post_init__(self):
         url = urlsplit(self.mcp_url)
@@ -65,6 +67,8 @@ class BattleConfig:
         for name in ('ks_cli', 'node', 'capture_script'):
             if not isinstance(getattr(self, name), str) or not getattr(self, name).strip():
                 raise ValueError(f'{name} 不能为空')
+        if self.docs_cli is not None and (not isinstance(self.docs_cli, str) or not self.docs_cli.strip()):
+            raise ValueError('docs_cli 必须是公开 CLI 路径或 None')
 
     @classmethod
     def load(cls, path):
@@ -246,8 +250,10 @@ class DocsCLI:
 
     def create(self, title, content_path):
         # Do not set link-share, classify-level, folder-id, or permissions.
-        return self.execute([self.config.ks_cli, 'doc', 'word', 'create', '--title', title,
-                             '--content-file', str(Path(content_path).resolve()), '--json'])
+        command = ([self.config.docs_cli, 'docs-cli', 'word', '+create'] if self.config.docs_cli else
+                   [self.config.ks_cli, 'doc', 'word', 'create'])
+        return self.execute(command + ['--title', title, '--content-file', str(Path(content_path).resolve())]
+                            + ([] if self.config.docs_cli else ['--json']))
 
     @staticmethod
     def document(receipt):
@@ -266,8 +272,11 @@ class DocsCLI:
         return {'doc_id': doc_id, 'url': url}
 
     def fetch(self, doc_id):
+        command = ([self.config.docs_cli, 'docs-cli', 'word', '+fetch'] if self.config.docs_cli else
+                   [self.config.ks_cli, 'doc', 'word', 'fetch'])
         manifest = self.execute([self.config.node, self.config.capture_script, '--command-kind', 'word.fetch', '--',
-                                 self.config.ks_cli, 'doc', 'word', 'fetch', '--doc-id', doc_id, '--format', 'raw', '--json'])
+                                 *command, '--doc-id', doc_id, '--format', 'raw']
+                                + ([] if self.config.docs_cli else ['--json']))
         capture = manifest.get('capture')
         if not isinstance(capture, dict):
             raise TransportError('Docs capture：' + cli_error(manifest))

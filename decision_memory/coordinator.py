@@ -24,6 +24,7 @@ from .task_delivery import DocumentDelivery, message_size_rejection, verify_task
 TERMINAL = {'human_review', 'agent_review_complete', 'agent_review_pending'}
 PAUSED = {'create_unknown', 'thread_unknown', 'protocol_error', 'waiting_timeout',
           'awaiting_model', 'extraction_failed', 'extraction_unknown', 'input_create_unknown', 'dispatch_rejected'}
+BATTLE_STAGES = (*STAGES, 'requirement')
 
 
 def file_digest(path):
@@ -61,7 +62,7 @@ class Battle:
 
     @classmethod
     def create(cls, root, config, sample_id, stage, brief, *, clarification='', model_config=None,
-               mode='baseline', **dependencies):
+               mode='baseline', batch_root=None, **dependencies):
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}', sample_id) or stage not in BATTLE_STAGES:
             raise ValueError('sample-id 或 stage 无效')
         if mode not in ('baseline', 'verified', 'artifact-only'):
@@ -79,6 +80,10 @@ class Battle:
                  'phase': 'author', 'round': 1, 'status': 'running', 'thread_id': None,
                  'operations': {}, 'files': {}, 'extractions': [], 'created_at': time.time(),
                  'human_review': 'pending', 'frozen': False}
+        if batch_root is not None:
+            if stage != 'requirement':
+                raise ValueError('整批冻结仅用于 requirement')
+            state['batch_root'] = str(Path(batch_root).resolve())
         state['state_digest'] = digest(state)
         write_json(root / 'state.json', state)
         return cls(root, **dependencies)
@@ -94,6 +99,11 @@ class Battle:
 
     def is_requirement(self):
         return self.state['stage'] == REQUIREMENT
+
+    def uses_requirement_manifest(self):
+        """New paired-evaluation protocol; legacy four-document cases remain replayable."""
+        path = self.path(f'operations/r{self.state["round"]:02d}-author/result.json')
+        return self.is_requirement() and path.is_file() and 'requirement' in read_json(path)
 
     def input_sample(self):
         """The frozen CLI input. Multi-node samples are stored in the official folder layout."""
@@ -238,6 +248,18 @@ class Battle:
         frozen = None
         if self.state['frozen']:
             frozen = read_json(self.path('frozen.json'))
+            if self.uses_requirement_manifest():
+                from .requirement_flow import RequirementFlow
+                RequirementFlow(self).audit(frozen)
+                # Common receipt/protocol checks above still apply to every operation.
+                return {'task_id': self.state['task_id'], 'status': self.state['status'], 'read_only': True,
+                        'files_checked': len(self.state['files']), 'completed_operations': checked,
+                        'ordinary_dispatch_receipts': ordinary_count, 'operator_recoveries': recoveries,
+                        'distinct_dispatch_receipts': len(message_keys), 'frozen': frozen,
+                        'extraction_attempts': len(self.state['extractions']),
+                        'model_prediction_available': bool(self.state.get('prediction')),
+                        'agent_score_available': self.state.get('score') is not None,
+                        'human_review': 'pending', 'kim_reply_readback': 'not_independently_verified'}
             sample = self.input_sample()
             references = read_json(self.path('scoring/references.json'))
             validate_references(references, sample)
@@ -304,6 +326,9 @@ class Battle:
                              review_feedback=review['metadata']['feedback'],
                              review_clarification=self.state['clarification'])
             return value
+        if self.uses_requirement_manifest():
+            from .requirement_flow import RequirementFlow
+            return RequirementFlow(self).payload(role)
         if role == 'reviewer':
             author = self.author_result()
             materials = ({'nodes': author['nodes']} if self.is_requirement()
@@ -323,7 +348,8 @@ class Battle:
             identity = {'task_id': self.state['task_id'], 'sample_id': self.state['sample_id'],
                         'role': role, 'round': self.state['round'], 'input_version': digest(payload)}
             if role == 'scorer':
-                identity['prediction_digest'] = digest(payload['prediction'])
+                identity['prediction_digest'] = (payload['prediction_digest'] if self.uses_requirement_manifest()
+                                                  else digest(payload['prediction']))
             op = {'key': key, 'identity': identity, 'nonce': uuid.uuid4().hex,
                   'create': 'new', 'dispatch': 'new', 'done': False, 'polls': 0}
             self.state['operations'][key] = op
@@ -558,17 +584,24 @@ class Battle:
                 self.state['status'] = 'human_review'
                 self.state['last_error'] = result['metadata']['feedback']
         else:
-            worksheet = read_json(self.path('scoring/worksheet.json'))
-            reviewed = apply_judgments(worksheet, result['judgments'], review_kind='agent')
-            score = score_worksheet(reviewed)
-            self.put_json('scoring/review.json', reviewed)
-            self.put_json('scoring/score.json', score)
+            if self.uses_requirement_manifest():
+                from .requirement_flow import RequirementFlow
+                score = RequirementFlow(self).score(result['judgments'])
+            else:
+                worksheet = read_json(self.path('scoring/worksheet.json'))
+                reviewed = apply_judgments(worksheet, result['judgments'], review_kind='agent')
+                score = score_worksheet(reviewed)
+                self.put_json('scoring/review.json', reviewed)
+                self.put_json('scoring/score.json', score)
             self.state['score'] = score
             self.state['status'] = 'agent_review_complete' if score['complete'] else 'agent_review_pending'
             self.state['phase'] = 'done'
         self.save()
 
     def freeze(self):
+        if self.uses_requirement_manifest():
+            from .requirement_flow import RequirementFlow
+            return RequirementFlow(self).freeze()
         author = self.author_result()
         input_dir = f'inputs/{self.state["sample_id"]}'
         if self.is_requirement():
@@ -595,12 +628,21 @@ class Battle:
         inputs directory and `artifact` the sample id (the same path the official evaluation uses)."""
         model = Config.load(config)
         timeout = min(3600, model.timeout * (model.retries + 1) * (6 if mode == 'verified' else 2) + 120)
-        if stage == REQUIREMENT:
+        if stage == REQUIREMENT and not Path(dialogue).is_file():
             source = ['--dataset', str(dialogue), '--unit', 'requirement', '--sample-id', str(artifact)]
+            args = [sys.executable, '-m', 'decision_memory', 'extract', *source,
+                    '--config', str(config), '--mode', mode, '--output', str(output)]
+        elif stage == 'requirement':
+            # One whole call (or verified steps) plus one baseline call per node.
+            from .requirements import read_requirement_manifest
+            count = len(read_requirement_manifest(Path(dialogue))[1])
+            timeout = min(7200, model.timeout * (model.retries + 1) * (2 * count + 4) + 120)
+            args = [sys.executable, '-m', 'decision_memory', 'requirement', 'compare', '--manifest', str(dialogue),
+                    '--config', str(config), '--mode', mode, '--output', str(output.parent)]
         else:
-            source = ['--dialogue', str(dialogue), '--artifact', str(artifact), '--stage', stage]
-        args = [sys.executable, '-m', 'decision_memory', 'extract', *source, '--config', str(config),
-                '--mode', mode, '--output', str(output)]
+            args = [sys.executable, '-m', 'decision_memory', 'extract', '--dialogue', str(dialogue),
+                    '--artifact', str(artifact), '--stage', stage, '--config', str(config),
+                    '--mode', mode, '--output', str(output)]
         result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
         return {'command': args, 'exit_code': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr}
 
@@ -609,6 +651,9 @@ class Battle:
             self.state['status'] = 'awaiting_model'
             self.save()
             return
+        if self.uses_requirement_manifest():
+            from .batch_gate import verify_batch_gate
+            verify_batch_gate(self)
         attempts = self.state['extractions']
         if not attempts:
             attempts.append({'number': 1, 'status': 'new'})
@@ -618,17 +663,29 @@ class Battle:
         prediction_path = self.path(relative + '/prediction.json')
         if prediction_path.exists():
             prediction = read_json(prediction_path)
-            sample = self.input_sample()
             if attempt.get('config_digest') != file_digest(self.state['model_config']):
                 raise ValueError('预测产生后模型配置已改变，不能将其作为当前配置的结果复用')
-            validate_saved(prediction, sample, ModelClient(Config.load(Path(self.state['model_config']))), self.state['mode'])
-            rendered = render_markdown(prediction)
+            if self.uses_requirement_manifest():
+                from .comparison import validate_comparison
+                from .requirement_flow import RequirementFlow
+                flow = RequirementFlow(self)
+                sample, nodes = flow.inputs()
+                validate_comparison(prediction, sample, nodes, prediction_path.parent,
+                                     Config.load(Path(self.state['model_config'])))
+                rendered = '# 整需求提取对照\n\n两个匿名视图及原始结果已保存；语义质量待评审。\n'
+                for name in [*prediction['raw_files'], 'job.json']:
+                    self.state['files'][relative + '/' + name] = file_digest(prediction_path.parent / name)
+                worksheet = flow.worksheets(prediction)
+            else:
+                sample = self.input_sample()
+                validate_saved(prediction, sample, ModelClient(Config.load(Path(self.state['model_config']))), self.state['mode'])
+                rendered = render_markdown(prediction)
+                worksheet = make_worksheet(prediction, read_json(self.path('scoring/references.json')), review_kind='agent')
             self.put_text(relative + '/prediction.md', rendered)
             self.state['files'][relative + '/prediction.json'] = file_digest(prediction_path)
             self.state['prediction'] = relative + '/prediction.json'
             attempt['status'] = 'completed'
-            self.put_json('scoring/worksheet.json', make_worksheet(prediction,
-                          read_json(self.path('scoring/references.json')), review_kind='agent'))
+            self.put_json('scoring/worksheet.json', worksheet)
             self.state['phase'] = 'scorer'
             self.state['status'] = 'running'
             self.state['last_error'] = None
@@ -643,7 +700,8 @@ class Battle:
         self.save()
         self.event('independent_cli_extraction_started', attempt=attempt['number'], mode=self.state['mode'])
         try:
-            inputs = ((self.path('inputs'), self.state['sample_id']) if self.is_requirement()
+            inputs = ((self.input_path('manifest.json'), self.input_path('artifact.md')) if self.uses_requirement_manifest()
+                      else (self.path('inputs'), self.state['sample_id']) if self.is_requirement()
                       else (self.input_path('dialogue.md'), self.input_path('artifact.md')))
             receipt = self.extractor(*inputs, self.state['stage'], Path(self.state['model_config']),
                                      self.state['mode'], prediction_path)
@@ -663,6 +721,9 @@ class Battle:
         self.verify_files()
         if self.state['status'] in TERMINAL:
             return
+        if self.uses_requirement_manifest() and self.state['phase'] == 'scorer':
+            from .batch_gate import verify_batch_gate
+            verify_batch_gate(self)
         if self.state['phase'] == 'extract':
             self.extraction_step()
         else:

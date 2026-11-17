@@ -2,6 +2,7 @@
 
 import json
 import http.client
+import hashlib
 import math
 import os
 import re
@@ -21,7 +22,11 @@ class ModelError(RuntimeError):
 
 
 class ModelOutputError(ValueError):
-    pass
+    def __init__(self, message, *, response_text=None, diagnostic=None, protocol_repair_allowed=True):
+        super().__init__(message)
+        self.response_text = response_text
+        self.diagnostic = diagnostic
+        self.protocol_repair_allowed = protocol_repair_allowed
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -190,6 +195,27 @@ def read_stream_completion(response, timeout):
 
 
 TRAILING_COMMA = re.compile(r',(\s*[}\]])')
+JSON_UNICODE_ESCAPE = re.compile(r'\\u([0-9a-fA-F]{4})')
+
+
+def contains_credential(value, sensitive_values):
+    """Check raw JSON escapes and parsed strings before persistence or repair."""
+    secrets = [secret for secret in sensitive_values if secret]
+    if not secrets:
+        return False
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, str):
+            decoded = JSON_UNICODE_ESCAPE.sub(lambda match: chr(int(match[1], 16)), current)
+            if any(secret in current or secret in decoded for secret in secrets):
+                return True
+        elif isinstance(current, dict):
+            pending.extend(current.keys())
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
+    return False
 
 
 def json_candidates(text: str):
@@ -288,7 +314,7 @@ class ModelClient:
             headers[header] = value
         return headers
 
-    def complete(self, system: str, user: str) -> dict:
+    def complete(self, system: str, user: str, *, strict_json: bool = False):
         if len(system) + len(user) > self.config.max_input_chars:
             raise ModelError('输入超过 max_input_chars，请按完整阶段拆分或调整上限')
         body = {'model': self.config.model, 'stream': self.config.stream, 'max_tokens': self.config.max_tokens,
@@ -303,7 +329,8 @@ class ModelClient:
         sensitive_values = [value for name, value in headers.items() if name.lower() not in ('content-type', 'accept')]
         sensitive_values += [value.removeprefix('Bearer ') for value in sensitive_values]
         request = urllib.request.Request(self.config.endpoint, data=json.dumps(body).encode(), headers=headers, method='POST')
-        call = {'http_attempts': 0, 'prompt_tokens': None, 'completion_tokens': None, 'seconds': 0, 'status': 'failed'}
+        call = {'http_attempts': 0, 'prompt_tokens': None, 'completion_tokens': None, 'seconds': 0,
+                'status': 'failed', 'transport_status': 'unknown'}
         self.calls.append(call)
         started = time.monotonic()
         try:
@@ -315,11 +342,22 @@ class ModelClient:
                             envelope = read_stream_completion(response, self.config.timeout)
                         else:
                             data = response.read(8_000_001)
+                            if strict_json and not getattr(response, 'chunked', False):
+                                declared = response.headers.get('Content-Length')
+                                if declared is not None:
+                                    try:
+                                        expected_bytes = int(declared)
+                                    except ValueError:
+                                        raise http.client.HTTPException('无效响应长度') from None
+                                    if expected_bytes < 0 or len(data) < expected_bytes:
+                                        raise http.client.IncompleteRead(b'', max(0, expected_bytes - len(data)))
                     if not self.config.stream and len(data) > 8_000_000:
                         raise ModelError('模型响应超过 8 MB 上限')
+                    call['transport_status'] = 'received'
                     break
                 except urllib.error.HTTPError as error:
                     code = error.code
+                    call['transport_status'] = 'http_error'
                     retry_after = error.headers.get('Retry-After', '')
                     try:
                         if code not in (408, 429, 500, 502, 503, 504) or attempt == self.config.retries:
@@ -329,6 +367,7 @@ class ModelClient:
                     delay = float(retry_after) if retry_after.isdigit() else 2 ** attempt
                     time.sleep(min(delay, 10))
                 except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException):
+                    call['transport_status'] = 'unknown'
                     if attempt == self.config.retries:
                         raise ModelError('模型接口连接失败、响应中断或超时') from None
                     time.sleep(2 ** attempt)
@@ -344,15 +383,59 @@ class ModelClient:
                     value = usage.get(name)
                     if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                         call[name] = value
+
+                def output_error(message, category, decode_error=None):
+                    # Keep only model content, never the envelope's HTTP headers.
+                    safe_content = content if isinstance(content, str) and category != 'credential_echo' else None
+                    if safe_content is not None:
+                        for secret in sorted(set(sensitive_values), key=len, reverse=True):
+                            if secret:
+                                safe_content = safe_content.replace(secret, '[REDACTED]')
+                        # An invalid Unicode scalar must not break local diagnostics.
+                        safe_content = safe_content.encode('utf-8', errors='backslashreplace').decode('utf-8')
+                    encoded = safe_content.encode('utf-8') if safe_content is not None else None
+                    finish_reason = choice.get('finish_reason')
+                    diagnostic = {'schema_version': 1, 'category': category,
+                        'finish_reason': finish_reason if finish_reason in (
+                            'stop', 'length', 'tool_calls', 'function_call', 'content_filter', None) else 'other',
+                        'content_bytes': len(encoded) if encoded is not None else None,
+                        'content_sha256': hashlib.sha256(encoded).hexdigest() if encoded is not None else None,
+                        'code_fenced': bool(safe_content and safe_content.lstrip().startswith('```')),
+                        'redaction_applied': category == 'credential_echo' or (
+                            isinstance(content, str) and safe_content != content)}
+                    if isinstance(decode_error, json.JSONDecodeError):
+                        diagnostic['json_error'] = {'line': decode_error.lineno, 'column': decode_error.colno,
+                                                    'position': decode_error.pos}
+                        diagnostic['json_error_source'] = 'original_response'
+                    call['response_diagnostic'] = diagnostic
+                    return ModelOutputError(message, response_text=safe_content, diagnostic=diagnostic,
+                                            protocol_repair_allowed=category != 'credential_echo')
+
+                if contains_credential(content, sensitive_values):
+                    raise output_error('模型响应包含认证信息，已拒绝保存内容或继续修复', 'credential_echo')
                 if choice.get('finish_reason') == 'length':
-                    raise ModelOutputError('输出被 max_tokens 截断，请精简条目或提高上限')
+                    raise output_error('输出被 max_tokens 截断，请精简条目或提高上限', 'output_truncated')
                 if choice.get('finish_reason') != 'stop' or choice['message'].get('refusal'):
                     raise ModelError('模型未正常完成文本输出，请检查网关完成状态或拒绝原因')
                 if not isinstance(content, str):
-                    raise ModelOutputError('模型 content 必须为文本')
+                    raise output_error('模型 content 必须为文本', 'invalid_content')
             except (KeyError, IndexError, TypeError, json.JSONDecodeError, UnicodeDecodeError):
                 raise ModelOutputError('模型响应不符合 Chat Completions JSON 协议') from None
-            result = parse_json(content)
+            if strict_json:
+                def invalid_constant(_):
+                    raise ValueError('非 JSON 数值')
+                try:
+                    result = json.loads(content, parse_constant=invalid_constant)
+                except ValueError as error:
+                    raise output_error('审计模式需要完整有效 JSON，不修复截断或非 JSON 文本',
+                                       'invalid_json', error) from None
+            else:
+                try:
+                    result = parse_json(content)
+                except ModelOutputError:
+                    raise output_error('模型未返回完整 JSON，请缩小输出或提高 max_tokens', 'invalid_json') from None
+            if contains_credential(result, sensitive_values):
+                raise output_error('模型响应包含认证信息，已拒绝保存内容或继续修复', 'credential_echo')
             call['status'] = 'success'
             return result
         finally:

@@ -44,6 +44,16 @@ def result_digest(result):
 
 
 def validate_saved(result, sample, client=None, mode=None):
+    if isinstance(result, dict) and (result.get('schema_version') == 5 or result.get('mode') == 'grounded'
+                                    or result.get('extraction_protocol') == 'whole-line-grounded-v1'):
+        from .grounded import validate_grounded_saved
+        return validate_grounded_saved(result, sample, client, mode)
+    from .requirements import RequirementSample
+    if isinstance(sample, RequirementSample) or (isinstance(result, dict) and result.get('scope') == 'requirement'):
+        from .requirement_pipeline import validate_requirement_saved
+        if not isinstance(sample, RequirementSample):
+            raise ValueError('需求结果需要完整需求输入，请使用 requirement validate')
+        return validate_requirement_saved(result, sample, client, mode)
     if not isinstance(result, dict) or result.get('input_fingerprint') != sample.fingerprint:
         raise ValueError('输入版本不匹配，请使用新的输出目录运行')
     if result.get('input_file_hashes') != sample.file_hashes:
@@ -88,10 +98,16 @@ def validate_saved(result, sample, client=None, mode=None):
 
 
 def render_markdown(result):
-    title = '需求交接' if result.get('stage') == 'requirement' else '阶段交接'
+    title = ('需求知识' if result.get('scope') == 'requirement' else
+             '需求交接' if result.get('stage') == 'requirement' else '阶段交接')
     lines = [f'# {title} {result["sample_id"]}', '',
              f'模式 `{result["mode"]}`。模型 `{result["model"]}`。', '',
              '引用已通过程序逐字核对。条目语义和覆盖范围仍需人工评审。', '']
+    if result.get('scope') == 'requirement':
+        proof = result.get('grounding_review')
+        lines.extend(['字段支持复核：' + ('模型已逐字段复核，仍待人工确认。' if proof else '未执行结构化字段复核。'), ''])
+        lines.extend(['节点顺序：' + ' → '.join(node['id'] + '（' + node['stage'] + '）' for node in result['nodes']),
+                      '', '以下条目为最终知识快照。' if result.get('schema_version') == 5 else '以下条目为当前知识，历史版本另列。', ''])
     for item in result['items']:
         lines.extend([f'## {item["id"]}', ''])
         for key, title in (('conclusion', '结论'), ('reason', '理由'), ('boundary', '适用边界')):
@@ -127,16 +143,65 @@ def render_markdown(result):
             for evidence in references:
                 lines.append(f'  - `{evidence["source_id"]}` · {evidence["file"]} 第 {evidence["line"]} 行 · {evidence["quote"]}')
         lines.append('')
+    if result.get('scope') == 'requirement' and result.get('schema_version') != 5:
+        lines.extend(['## 变更历史', '', '已失效或已替换的历史版本不作为现行知识。', ''])
+        for event in result['history']:
+            lines.extend([f'### {event["id"]} · {event["operation"]} · {event["status"]}', '',
+                          f'知识 `{event["knowledge_key"]}`，节点 `{event["node_id"]}`，版本 {event["version"]}。', ''])
+            if 'item' in event:
+                for name, label in (('conclusion', '结论'), ('reason', '理由'), ('boundary', '边界')):
+                    lines.extend([f'{label}：{event["item"][name]["text"]}', ''])
+                    for ref in event['item'][name]['evidence']:
+                        lines.append(f'- `{ref["source_id"]}` · {ref["file"]} 第 {ref["line"]} 行 · {ref["quote"]}')
+                    lines.append('')
+            else:
+                if 'note' in event:
+                    lines.extend([event['note'], ''])
+                refs = event['evidence']
+                if isinstance(refs, dict):
+                    refs = [ref for field in refs.values() for ref in field]
+                for ref in refs:
+                    lines.append(f'- `{ref["source_id"]}` · {ref["file"]} 第 {ref["line"]} 行 · {ref["quote"]}')
+                lines.append('')
+    if result.get('scope') == 'requirement' and result.get('grounding_review'):
+        lines.extend(['## 理由未知处理', ''])
+        for check in result['grounding_review']['reason_checks']:
+            lines.extend([f'- `{check["source_id"]}` · {check["quote"]} · `{check["status"]}` · {check["notes"]}'])
+            for ref in check['evidence']:
+                lines.append(f'  - `{ref["source_id"]}` · {ref["file"]} 第 {ref["line"]} 行 · {ref["quote"]}')
+        lines.append('')
     lines.extend(['## 运行记录', '', '```json', json.dumps(result['metrics'], ensure_ascii=False, indent=2), '```', ''])
     return '\n'.join(lines)
 
 
-def save_result(path: Path, result):
+def save_result(path: Path, result, *, sample=None):
     if path.suffix != '.json':
         raise ValueError('提取结果输出文件须使用 .json 扩展名')
     markdown = path.with_suffix('.md')
     if path.exists() or markdown.exists():
         raise ValueError('输出已存在，请指定新的输出文件或使用 batch --resume')
+    if result.get('schema_version') == 5 or result.get('mode') == 'grounded':
+        if sample is None:
+            raise ValueError('grounded 保存需要原始材料')
+        result['result_digest'] = result_digest(result)
+        validate_saved(result, sample)
+        rendered = render_markdown(result)
+        write_text(markdown, rendered)
+        write_json(path, result)
+        return
+    if result.get('schema_version') in (3, 4) and result.get('scope') == 'requirement':
+        from .requirement_audit_report import render_audit_html
+        report = path.with_suffix('.audit.html')
+        if sample is None or report.exists():
+            raise ValueError('新审计结果需要完整原文和不存在的 HTML 报告路径')
+        # Verify and render everything before publishing; the success JSON is written last.
+        result['result_digest'] = result_digest(result)
+        validate_saved(result, sample)
+        rendered, html = render_markdown(result), render_audit_html(result, sample)
+        write_text(markdown, rendered)
+        write_text(report, html)
+        write_json(path, result)
+        return
     result['result_digest'] = result_digest(result)
     write_json(path, result)
     write_text(markdown, render_markdown(result))

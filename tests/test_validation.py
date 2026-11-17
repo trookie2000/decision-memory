@@ -37,6 +37,56 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '证据'):
             validate_result(payload, self.sample)
 
+    def test_unstated_punctuation_is_canonical_and_preserves_original_text(self):
+        for name in ('reason', 'boundary'):
+            for original in ('未说明。', '未说明.', '  未说明。  '):
+                with self.subTest(field=name, original=original):
+                    payload = valid_payload()
+                    payload['items'][0][name] = {'text': original, 'evidence': []}
+                    untouched = copy.deepcopy(payload)
+                    result = validate_result(payload, self.sample)
+                    self.assertEqual(result['items'][0][name], {
+                        'text': '未说明', 'evidence': [], 'protocol_normalization': {
+                            'rule': 'unstated-punctuation-v1', 'original_text': original}})
+                    self.assertEqual(payload, untouched)
+                    self.assertEqual(validate_result(result, self.sample), result)
+
+    def test_unstated_punctuation_cannot_be_a_conclusion_or_question(self):
+        for original in ('未说明。', '未说明.'):
+            for evidence in ([], valid_payload()['items'][0]['conclusion']['evidence']):
+                with self.subTest(original=original, evidence=evidence):
+                    payload = valid_payload()
+                    payload['items'][0]['conclusion'] = {'text': original, 'evidence': evidence}
+                    with self.assertRaises(ValueError):
+                        validate_result(payload, self.sample)
+                    payload = valid_payload()
+                    payload['open_questions'] = [{'text': original, 'evidence': evidence}]
+                    with self.assertRaises(ValueError):
+                        validate_result(payload, self.sample)
+
+    def test_unstated_normalization_never_swallows_evidence_or_business_text(self):
+        for field in ({'text': '未说明。', 'evidence': [{'source_id': 'D00001', 'quote': '门槛改成 120 元'}]},
+                      {'text': '未说明。后续需要确认具体原因', 'evidence': []},
+                      {'text': '未说明..', 'evidence': []}):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                payload = valid_payload()
+                payload['items'][0]['reason'] = field
+                validate_result(payload, self.sample)
+
+    def test_forged_normalization_records_are_rejected(self):
+        for record in (None, [], {'rule': 'other', 'original_text': '未说明。'},
+                       {'rule': 'unstated-punctuation-v1', 'original_text': '用户要求 120 元'},
+                       {'rule': 'unstated-punctuation-v1', 'original_text': '未说明。', 'extra': True}):
+            with self.subTest(record=record), self.assertRaises(ValueError):
+                payload = valid_payload()
+                payload['items'][0]['reason']['protocol_normalization'] = record
+                validate_result(payload, self.sample)
+        payload = valid_payload()
+        payload['items'][0]['boundary']['protocol_normalization'] = {
+            'rule': 'unstated-punctuation-v1', 'original_text': '未说明。'}
+        with self.assertRaises(ValueError):
+            validate_result(payload, self.sample)
+
     def test_rejects_non_object_and_empty_conclusion(self):
         with self.assertRaises(ValueError):
             validate_result([], self.sample)

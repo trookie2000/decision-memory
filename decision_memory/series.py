@@ -12,10 +12,9 @@ from pathlib import Path
 
 from .client import Config, ModelClient, ModelError
 from .collaboration import BattleConfig, DocsCLI, MarioMCP, TransportError
-from .coordinator import Battle, PAUSED, file_digest, run_lock
+from .coordinator import BATTLE_STAGES, Battle, PAUSED, file_digest, run_lock
 from .evaluation import digest
 from .pipeline import MODES
-from .sources import BATTLE_STAGES
 from .storage import read_json, write_json, write_text
 
 
@@ -63,6 +62,9 @@ class Series:
                     or len(case.get('clarification', '')) > 20000):
                 raise ValueError('case 编号、阶段、要求或修订条件无效')
             ids.add(case['sample_id'])
+        whole = [case['stage'] == 'requirement' for case in cases]
+        if any(whole) and not all(whole):
+            raise ValueError('整需求批次不能混合单阶段 case')
         if mode not in MODES or type(max_seconds) is not int or not 1 <= max_seconds <= 86400:
             raise ValueError('模式或批次时限无效（1 到 86400 秒）')
         model_config = Path(model_config).resolve()
@@ -79,6 +81,9 @@ class Series:
                  'cases': json.loads(json.dumps(cases)),
                  'max_seconds': max_seconds, 'index': 0, 'records': [], 'last_error': None,
                  'preflight_attempts': 0}
+        if all(whole):
+            from .batch_gate import implementation_signature
+            state.update(evaluation_pass='prepare', prepared_count=0, implementation=implementation_signature())
         state['state_digest'] = digest(state)
         write_json(root / 'series-state.json', state)
         series = cls(root, **dependencies)
@@ -96,6 +101,10 @@ class Series:
             raise ValueError('批次清单已被改动')
         if file_digest(self.model_path) != self.state['model_config_digest']:
             raise ValueError('批次模型配置已被改动，请恢复原配置或使用新批次')
+        if 'evaluation_pass' in self.state:
+            from .batch_gate import implementation_signature
+            if self.state['implementation'] != implementation_signature():
+                raise ValueError('批次代码或提示词已改动，请使用新批次')
 
     def summary(self):
         process = read_json(self.root / 'process.json') if (self.root / 'process.json').exists() else {}
@@ -111,12 +120,18 @@ class Series:
         all_cases = [records.get(case['sample_id'], {'sample_id': case['sample_id'], 'phase': 'not_started',
                       'status': 'pending', 'score': None, 'output': str(self.root / 'cases' / case['sample_id']),
                       'last_error': None}) for case in self.cases]
-        return {'status': self.state['status'], 'total': len(self.cases), 'finished': self.state['index'],
+        finished = 0 if self.state.get('evaluation_pass') == 'prepare' else self.state['index']
+        result = {'status': self.state['status'], 'total': len(self.cases), 'finished': finished,
+                'prepared': self.state.get('prepared_count'), 'evaluation_pass': self.state.get('evaluation_pass'),
                 'current_case': self.cases[self.state['index']]['sample_id'] if self.state['index'] < len(self.cases) else None,
                 'pid': pid, 'process_running': alive, 'stop_requested': (self.root / 'STOP').exists(),
                 'last_error': self.state.get('last_error'), 'cases': all_cases,
                 'output': str(self.root), 'log': str(self.root / 'background.log'),
                 'human_review': 'pending', 'official_score': None}
+        if 'evaluation_pass' in self.state:
+            from .requirement_flow import summarize_comparisons
+            result['comparison_summary'] = summarize_comparisons(all_cases, len(self.cases))
+        return result
 
     def report(self):
         summary = self.summary()
@@ -132,6 +147,31 @@ class Series:
                          f'[运行记录](cases/{sample}/report.md) |')
         if summary['last_error']:
             lines.extend(['', '阻塞原因：' + summary['last_error']])
+        if 'evaluation_pass' in self.state:
+            lines.extend(['', '## 整需求对照', '',
+                          f'已审题冻结 {summary["prepared"]}/{summary["total"]}；当前为 {summary["evaluation_pass"]}。', '',
+                          '主覆盖率仅计完整覆盖，未知信息单列。逐节点方法原样拼接，不替它删除过期答案。', '',
+                          '| Case | 方法 | 决策完整覆盖 | 决策准确率 | 引用支持 | 未知覆盖 | 模型调用 | 秒 |',
+                          '|---|---|---:|---:|---:|---:|---:|---:|'])
+            for record in summary['cases']:
+                score = record.get('score') or {}
+                for label, values in score.get('variants', {}).items():
+                    method = score['methods'][label]
+                    metrics = score['metrics'][method]
+                    def pct(value):
+                        return '待评' if value is None else f'{value:.1%}'
+                    lines.append(f'| {record["sample_id"]} | {method} | '
+                                 f'{pct(values["reference_coverage"]["decision"]["coverage"])} | '
+                                 f'{pct(values["decisions"]["precision_reviewed"])} | '
+                                 f'{pct(values["decisions"]["citation_support_reviewed"])} | '
+                                 f'{pct(values["reference_coverage"]["uncertainty"]["coverage"])} | '
+                                 f'{metrics["calls"]} | {metrics["seconds"]} |')
+            totals = summary['comparison_summary']
+            lines.extend(['', f'完整评分 {totals["fully_scored_cases"]}/{totals["expected_cases"]}。'
+                          '整批未完整评分时不输出总体质量比率；当前成本只汇总已评分样本，失败调用费用仍未知。', ''])
+            for method, values in totals['methods'].items():
+                lines.append(f'- {method}：决策完整覆盖 {values["decision_coverage"]}；准确率 {values["precision"]}；'
+                             f'引用支持 {values["citation_support"]}；未知覆盖 {values["uncertainty_coverage"]}。')
         write_text(self.root / 'report.md', '\n'.join(lines) + '\n', overwrite=True)
         return summary
 
@@ -182,6 +222,11 @@ class Series:
             write_json(self.root / 'process.json', process, overwrite=True)
             return {**self.summary(), 'pid': child.pid, 'launch': 'started'}
 
+    def finish_preparation(self):
+        from .batch_gate import freeze_batch
+        freeze_batch(self.root, self.state)
+        self.state.update(evaluation_pass='evaluate', index=0, prepared_count=len(self.cases))
+
     def run(self, resume=False, retry_extraction=False):
         with run_lock(self.root):
             if read_json(self.root / 'series-state.json') != self.state:
@@ -202,6 +247,8 @@ class Series:
             self.save()
             try:
                 self.verify_inputs()
+                if self.state.get('evaluation_pass') == 'prepare' and self.state['index'] == len(self.cases):
+                    self.finish_preparation()
                 model_checked = False
                 end = time.monotonic() + self.state['max_seconds']
                 while self.state['index'] < len(self.cases):
@@ -237,11 +284,16 @@ class Series:
                     if (folder / 'state.json').exists():
                         battle = Battle(folder, **self.dependencies)
                     else:
+                        prepare = self.state.get('evaluation_pass') == 'prepare'
                         battle = Battle.create(folder, self.config, case['sample_id'], case['stage'], case['brief'],
-                                               clarification=case.get('clarification', ''), model_config=self.model_path,
+                                               clarification=case.get('clarification', ''),
+                                               model_config=None if prepare else self.model_path,
+                                               batch_root=self.root if 'evaluation_pass' in self.state else None,
                                                mode=self.state['mode'], **self.dependencies)
                     explicit_retry = retry_extraction and battle.state['status'] in ('extraction_failed', 'extraction_unknown')
-                    value = battle.run(0, retry_extraction=explicit_retry)
+                    attach_model = (self.model_path if self.state.get('evaluation_pass') == 'evaluate'
+                                    and battle.state['phase'] == 'extract' and not battle.state['model_config'] else None)
+                    value = battle.run(0, retry_extraction=explicit_retry, model_config=attach_model)
                     retry_extraction = False
                     record = {k: value.get(k) for k in ('sample_id', 'phase', 'status', 'score', 'output', 'last_error')}
                     if len(self.state['records']) <= self.state['index']:
@@ -250,7 +302,16 @@ class Series:
                         self.state['records'][self.state['index']] = record
                     print(json.dumps({'event': 'series_progress', 'index': self.state['index'] + 1,
                                       'total': len(self.cases), **record}, ensure_ascii=False), flush=True)
-                    if value['status'] in ('agent_review_complete', 'agent_review_pending', 'human_review'):
+                    prepare = self.state.get('evaluation_pass') == 'prepare'
+                    if prepare and value['status'] == 'awaiting_model' and value['sample_frozen']:
+                        if self.state['index'] + 1 == len(self.cases):
+                            self.finish_preparation()
+                        else:
+                            self.state['prepared_count'] += 1
+                            self.state['index'] += 1
+                    elif prepare and value['status'] == 'human_review':
+                        self.state.update(status='blocked', last_error=f'{case["sample_id"]} 审题需人工确认，整批不进入提取')
+                    elif value['status'] in ('agent_review_complete', 'agent_review_pending', 'human_review'):
                         self.state['index'] += 1
                         print(json.dumps({'event': 'series_case_finished', 'sample_id': case['sample_id'],
                                           'finished': self.state['index'],
@@ -267,7 +328,7 @@ class Series:
                         break
                     if value['status'] == 'waiting':
                         self.sleep(self.config.poll_interval)
-                if self.state['index'] == len(self.cases):
+                if self.state['index'] == len(self.cases) and self.state.get('evaluation_pass') != 'prepare':
                     self.state['status'] = 'completed'
             except (OSError, ValueError, ModelError, TransportError, subprocess.SubprocessError) as error:
                 self.state['status'] = 'blocked'

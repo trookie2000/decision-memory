@@ -71,6 +71,13 @@ def parse_document(markdown, identity, completion_marker, stage, task_input_dige
     if role == 'author':
         if metadata.get('status') != 'completed':
             raise ValueError('出题结果 status 必须为 completed')
+        if stage == REQUIREMENT and 'requirement.json' in blocks:
+            from .requirement_protocol import parse_requirement
+            if 'gold.json' not in blocks:
+                raise ValueError('整需求出题缺少 requirement.json/gold.json')
+            parsed = parse_requirement(json.loads(blocks['requirement.json']), json.loads(blocks['gold.json']),
+                                       identity['sample_id'])
+            return {'metadata': metadata, **parsed}
         if stage == REQUIREMENT:
             names = [name for _, *pair in REQUIREMENT_FILES for name in pair]
             if not all(name in blocks for name in names + ['gold.json']):
@@ -116,7 +123,7 @@ def worker_message(identity, completion_marker, url, stage, payload):
 完成标记只能在完整内容已成功写入后添加；接口失败时在 KIM 如实说明，不得冒充完成。
 这是 Agent 初评，绝不等于人工确认或比赛正式成绩。阶段为 {stage}。
 '''
-    if identity['role'] == 'author' and stage == REQUIREMENT:
+    if identity['role'] == 'author' and stage == REQUIREMENT and 'nodes' in payload.get('previous', {}):
         instructions = '''你是真实出题员工。根据给定 brief 生成一个虚构需求的**两个连续环节**：先需求分析，后技术设计。
 需求分析环节：## 需求确认记录.md（8～12 条 **用户：** / **AGENT：** 交替消息）和 ## 需求分析.md（正式需求分析文档）。
 技术设计环节：## 技术设计确认记录.md（8～12 条消息）和 ## 技术方案.md（正式技术方案）。
@@ -130,6 +137,9 @@ gold.json 为 JSON 数组，只收整个需求最终生效的知识（被技术�
 通常 8～12 条，不为凑数量造结论。
 如果输入包含 previous 和 review_feedback，请根据真实评审意见修订，返回完整新版材料，不只给差异。
 '''
+    elif stage == 'requirement' and 'nodes' not in payload:
+        from .requirement_protocol import worker_instructions
+        instructions = worker_instructions(identity['role'])
     elif identity['role'] == 'author':
         instructions = '''你是真实出题员工。根据给定 brief 生成一份虚构的、单个已完成研发阶段的样本。
 请给 8～12 条自然的用户/AGENT 交替消息，使用 **用户：** 和 **AGENT：** 标记；包含提议、纠偏和最终确认。

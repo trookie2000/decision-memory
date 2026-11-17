@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "requirement_id": "DEMO-CACHE",
+  "nodes": [
+    {
+      "id": "analysis",
+      "stage": "analysis",
+      "dialogue": "analysis-dialogue.md",
+      "artifact": "analysis-artifact.md"
+    },
+    {
+      "id": "design",
+      "stage": "design",
+      "dialogue": "design-dialogue.md",
+      "artifact": "design-artifact.md"
+    },
+    {
+      "id": "coding",
+      "stage": "coding",
+      "dialogue": "coding-dialogue.md",
+      "artifact": "coding-artifact.md"
+    }
+  ]
+}

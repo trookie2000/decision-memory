@@ -34,8 +34,16 @@ def task_packet(op, stage, payload, request):
     identity = op['identity']
     if digest(payload) != identity['input_version']:
         raise ValueError('Docs 任务输入与原始 input_version 不匹配')
-    if 'prediction_digest' in identity and digest(payload.get('prediction')) != identity['prediction_digest']:
-        raise ValueError('Docs 任务输入与原始 prediction_digest 不匹配')
+    if 'prediction_digest' in identity:
+        prediction = payload.get('prediction')
+        legacy_requirement = ('nodes' in payload and isinstance(prediction, dict)
+                              and prediction.get('stage') == 'requirement'
+                              and prediction.get('scope') != 'requirement')
+        if stage == 'requirement' and not legacy_requirement:
+            from .comparison import verify_scoring_views
+            verify_scoring_views(payload, identity['prediction_digest'])
+        elif digest(payload.get('prediction')) != identity['prediction_digest']:
+            raise ValueError('Docs 任务输入与原始 prediction_digest 不匹配')
     return {'schema': 1, 'kind': 'decision_memory_task_input', 'identity': identity,
             'stage': stage, 'result_document': op['document'], 'completion_marker': marker(identity, op['nonce']),
             'request': request, 'payload': payload}

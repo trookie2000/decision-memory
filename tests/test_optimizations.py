@@ -121,6 +121,14 @@ class OfficialEvalTests(unittest.TestCase):
         with zipfile.ZipFile(path, 'w') as archive:
             archive.writestr('rules/requirements/评测标注/应被沉淀知识标注.md', KNOWLEDGE)
             archive.writestr('rules/requirements/评测标注/有效上下文标注.md', CONTEXT)
+            for name, analysis, design in (
+                    ('REQ-one', '门槛为 100。', '甲方负责排序。\n失败时不改变候选。'),
+                    ('REQ-two', '浏览不去重。', '弱一致计数，少一两次没关系。')):
+                prefix = 'rules/requirements/' + name
+                archive.writestr(prefix + '/上下文/需求确认记录.md', '**用户：**\n' + analysis)
+                archive.writestr(prefix + '/产物/需求分析.md', analysis)
+                archive.writestr(prefix + '/上下文/技术设计确认记录.md', '**用户：**\n' + design)
+                archive.writestr(prefix + '/产物/技术方案.md', design)
         return path
 
     def test_references_are_grouped_by_requirement_with_stage_tags(self):
@@ -146,7 +154,8 @@ class OfficialEvalTests(unittest.TestCase):
                     'positives': [{'ref_id': f'K{i}', 'coverage': 'full' if i < 9 else 'partial'}
                                   for i in range(10)]}
         value = official_eval.metrics([judgment])
-        self.assertAlmostEqual(value['recall'], 0.95)
+        self.assertAlmostEqual(value['recall'], 0.9)
+        self.assertAlmostEqual(value['recall_weighted'], 0.95)
         self.assertAlmostEqual(value['precision'], 0.95)
         self.assertEqual(value['projected_points'], {'recall': 20, 'precision': 20, 'source': 10})
         self.assertEqual(value['partial_refs'], ['K9'])
@@ -204,19 +213,24 @@ class EndToEndTests(unittest.TestCase):
         self.assertIn('决策轨迹', client.prompts[2][1])
 
     def test_evaluate_scores_a_prediction_directory(self):
+        from decision_memory.pipeline import extract
+        from decision_memory.sources import discover_samples
+        from decision_memory.storage import save_result
         with tempfile.TemporaryDirectory() as directory:
             dataset = OfficialEvalTests().dataset(directory)
             predictions = Path(directory) / 'run'
             predictions.mkdir()
-            prediction = {'sample_id': 'REQ-one-design', 'stage': 'design', 'items': [
-                {'id': 'K001', 'conclusion': {'text': '甲方负责排序', 'evidence': [
-                    {'file': 'x/技术方案.md', 'line': 3, 'quote': '甲方'}]},
-                 'reason': UNSTATED, 'boundary': UNSTATED}]}
-            (predictions / 'REQ-one-design.json').write_text(json.dumps(prediction, ensure_ascii=False))
+            for sample in discover_samples(dataset, requirement_id='REQ-one'):
+                items = [] if sample.stage == 'analysis' else [
+                    {'conclusion': {'text': '甲方负责排序', 'evidence': [
+                        {'source_id': 'A00001', 'quote': '甲方负责排序'}]}, 'reason': UNSTATED, 'boundary': UNSTATED}]
+                prediction = extract(sample, FakeClient([{'items': items, 'open_questions': []}]), 'baseline')
+                save_result(predictions / (sample.sample_id + '.json'), prediction)
             (predictions / 'summary.json').write_text('{}')
             judge = {'items': [{'item_id': 'design:K001', 'verdict': 'valid', 'matches': ['K1'],
                                 'citation_support': True, 'notes': 'ok'}],
-                     'positives': [{'ref_id': 'K1', 'coverage': 'full'}, {'ref_id': 'K2', 'coverage': 'missing'}]}
+                     'positives': [{'ref_id': 'K1', 'coverage': 'full', 'items': ['design:K001'], 'notes': '规则完整。'},
+                                   {'ref_id': 'K2', 'coverage': 'missing', 'items': [], 'notes': '没有门槛预测。'}]}
             client = FakeClient([judge])
             report = official_eval.evaluate(dataset, predictions, client)
         total = report['total']

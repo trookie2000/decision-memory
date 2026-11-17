@@ -41,7 +41,8 @@ class Sample:
     fingerprint: str
     catalog: dict[str, Source]
     file_hashes: dict[str, str]
-    node_stages: dict[int, str] = field(default_factory=dict)
+    input_bytes: int = 0
+    node_stages: dict[int, str] = field(default_factory=dict, kw_only=True)
 
     def documents(self, sources=None) -> list[dict]:
         """Describe provenance without assigning supplementary files a place in time."""
@@ -83,6 +84,12 @@ def make_sample(dialogue: str, artifact: str, stage: str, sample_id: str = 'samp
                 dialogue_name: str = 'dialogue.md', artifact_name: str = 'artifact.md') -> Sample:
     if stage not in STAGES:
         raise ValueError('stage 必须为 analysis 或 design')
+    return index_materials(dialogue, artifact, stage, sample_id, dialogue_name, artifact_name)
+
+
+def index_materials(dialogue: str, artifact: str, stage: str, sample_id: str,
+                    dialogue_name: str, artifact_name: str) -> Sample:
+    """Index a supplied pair; requirement node labels need not be stage CLI labels."""
     if not dialogue.strip() or not artifact.strip():
         raise ValueError('对话与最终产物均不能为空')
     if any(len(text.encode('utf-8')) > MAX_FILE_BYTES for text in (dialogue, artifact)):
@@ -94,7 +101,8 @@ def make_sample(dialogue: str, artifact: str, stage: str, sample_id: str = 'samp
     ).encode()).hexdigest()
     file_hashes = {dialogue_name: hashlib.sha256(dialogue.encode('utf-8')).hexdigest(),
                   artifact_name: hashlib.sha256(artifact.encode('utf-8')).hexdigest()}
-    return Sample(sample_id, stage, fingerprint, catalog, file_hashes)
+    return Sample(sample_id, stage, fingerprint, catalog, file_hashes,
+                  len(dialogue.encode('utf-8')) + len(artifact.encode('utf-8')))
 
 
 def index_pair(catalog, dialogue_name, dialogue, artifact_name, artifact, node=None):
@@ -172,7 +180,9 @@ def requirement_from_documents(sample_id: str, documents: list[dict]) -> Sample:
     fingerprint = hashlib.sha256(json.dumps(
         [REQUIREMENT, [[d['kind'], d['node'], d['label'], d['name'], d['text']] for d in documents]],
         ensure_ascii=False).encode()).hexdigest()
-    return Sample(sample_id, REQUIREMENT, fingerprint, catalog, file_hashes, node_stages)
+    return Sample(sample_id, REQUIREMENT, fingerprint, catalog, file_hashes,
+                  sum(len(document['text'].encode('utf-8')) for document in documents),
+                  node_stages=node_stages)
 
 
 def read_text(path: Path) -> str:
@@ -186,12 +196,13 @@ def load_sample(dialogue: Path, artifact: Path, stage: str) -> Sample:
                        dialogue.parent.name + '-' + stage, str(dialogue), str(artifact))
 
 
-def discover_samples(path: Path, sample_id: str | None = None) -> list[Sample]:
+def discover_samples(path: Path, sample_id: str | None = None, *, requirement_id: str | None = None) -> list[Sample]:
     """Read recognized stage pairs from a ZIP or directory, never annotation contents."""
     samples = [make_sample(pair['dialogue'], pair['artifact'], pair['stage'], pair['requirement'] + '-' + pair['stage'],
                            pair['dialogue_name'], pair['artifact_name'])
                for pair in discover_pairs(path, lambda requirement, stage:
-                                          sample_id is None or requirement + '-' + stage == sample_id)]
+                                          (sample_id is None or requirement + '-' + stage == sample_id)
+                                          and (requirement_id is None or requirement == requirement_id))]
     if not samples:
         raise ValueError('未找到官方格式的阶段样本')
     if len({item.sample_id for item in samples}) != len(samples):

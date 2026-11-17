@@ -1,7 +1,7 @@
 [battle]
 # All external writes go only to this group and these two employees. Fill in your own IDs.
 mcp_url = "http://127.0.0.1:38399/mcp"
-ks_cli = "ks-cli"
+docs_cli = "kcli" # Uses public kcli docs-cli word commands.
 group_id = "<你的 KIM 测试群数字 ID>"
 author_id = "<命题7-出题人 的 KIM 数字 ID>"
 reviewer_id = "<命题7-评审人 的 KIM 数字 ID>"

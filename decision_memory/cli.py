@@ -10,13 +10,13 @@ from pathlib import Path
 from .client import Config, ModelClient, ModelError
 from .collaboration import BattleConfig, DocsCLI, MarioMCP, TransportError
 from .evaluation import make_worksheet, score_worksheet, validate_references
-from .pipeline import MODES, extract
+from .pipeline import MODES, STAGE_MODES, extract
 from .sources import BATTLE_STAGES, STAGES, discover_requirements, discover_samples, load_sample
 from .storage import read_json, render_markdown, save_result, validate_saved, write_json, write_text
 
 
 def parser():
-    root = argparse.ArgumentParser(prog='decision-memory', description='研发阶段决策提取与证据核查')
+    root = argparse.ArgumentParser(prog='decision-memory', description='研发阶段与完整需求的知识提取及证据核查')
     commands = root.add_subparsers(dest='command', required=True)
     inspect = commands.add_parser('inspect', help='离线检查 ZIP 或目录的需求输入')
     inspect.add_argument('--dataset', required=True, type=Path)
@@ -29,7 +29,7 @@ def parser():
     single.add_argument('--sample-id', help='--dataset 中的阶段编号；--unit requirement 时为需求目录名')
     single.add_argument('--unit', choices=('stage', 'requirement'), default='requirement',
                         help='stage：每个阶段单独提取；requirement：整个需求按节点顺序合并为一份输入')
-    add_model_arguments(single)
+    add_model_arguments(single, modes=STAGE_MODES)
     single.add_argument('--output', required=True, type=Path)
     batch = commands.add_parser('batch', help='对官方格式样本批量提取')
     batch.add_argument('--dataset', required=True, type=Path)
@@ -78,9 +78,84 @@ def parser():
     official_score.add_argument('--config', required=True, type=Path, help='评分模型配置')
     official_score.add_argument('--scope', choices=('requirement', 'stage'), default='requirement')
     official_score.add_argument('--output', required=True, type=Path, help='新的评分输出目录')
+    add_requirement_arguments(commands)
     add_battle_arguments(commands)
     add_series_arguments(commands)
     return root
+
+
+def add_requirement_arguments(commands):
+    command = commands.add_parser('requirement', help='按有序节点提取完整需求，保存知识更新与失效记录')
+    actions = command.add_subparsers(dest='requirement_command', required=True)
+    for action in ('inspect', 'extract', 'validate', 'compare'):
+        leaf = actions.add_parser(action)
+        source = leaf.add_mutually_exclusive_group(required=True)
+        source.add_argument('--manifest', type=Path, help='显式列出有序节点的 JSON 清单')
+        source.add_argument('--dataset', type=Path, help='官方 ZIP 或目录，不读取评测标注')
+        leaf.add_argument('--requirement-id', help='数据集中的需求目录名')
+        if action in ('extract', 'compare'):
+            add_model_arguments(leaf)
+            leaf.add_argument('--output', required=True, type=Path)
+            if action == 'extract':
+                leaf.add_argument('--evidence-audit', choices=('v1', 'v2'), help='主动开启需求级证据准入和候选覆盖审计，仅 verified')
+        elif action == 'inspect':
+            leaf.add_argument('--output', type=Path)
+        else:
+            leaf.add_argument('--result', required=True, type=Path)
+
+
+def run_requirement(args):
+    from .requirements import discover_requirements, load_requirement_manifest
+    from .requirement_pipeline import extract_requirement
+    if args.manifest and args.requirement_id:
+        raise ValueError('--manifest 不能同时传 --requirement-id')
+    action = args.requirement_command
+    audit = getattr(args, 'evidence_audit', None)
+    if audit and args.mode != 'verified':
+        raise ValueError('--evidence-audit 仅支持 --mode verified')
+    saved = read_json(args.result) if action == 'validate' else None
+    requirement_id = args.requirement_id or (saved.get('requirement_id') if isinstance(saved, dict) else None)
+    if args.dataset and action != 'inspect' and not requirement_id:
+        raise ValueError('--dataset 需要 --requirement-id')
+    if action == 'extract' and (args.output.suffix != '.json' or args.output.exists()
+                                or args.output.with_suffix('.md').exists()):
+        raise ValueError('需要尚不存在的 .json 输出路径')
+    if action == 'extract' and (args.output.with_suffix('.run').exists() or args.output.with_suffix('.audit.html').exists()):
+        raise ValueError('审计 run 目录或报告已存在，请检查原回执；禁止自动重发')
+    samples = ([load_requirement_manifest(args.manifest)] if args.manifest
+               else discover_requirements(args.dataset, requirement_id))
+    if action == 'inspect':
+        summary = {'requirements': [{'requirement_id': sample.sample_id, 'nodes': list(sample.nodes),
+                                    'input_fingerprint': sample.fingerprint, 'file_hashes': sample.file_hashes,
+                                    'source_lines': len(sample.catalog)} for sample in samples]}
+        if args.output:
+            write_json(args.output, summary)
+        return summary, 0
+    if len(samples) != 1:
+        raise ValueError('需要选定唯一需求')
+    sample = samples[0]
+    if action == 'validate':
+        validate_saved(saved, sample)
+        return {'requirement_id': sample.sample_id, 'exact_citations': 'passed', 'event_replay': 'passed',
+                'items': len(saved['items']), 'semantic_quality': 'requires_human_review'}, 0
+    if action == 'compare':
+        from .comparison import run_comparison
+        from .requirements import read_requirement_manifest
+        nodes = (read_requirement_manifest(args.manifest)[1] if args.manifest else [
+            (node.stage, node.stage, node) for node in discover_samples(args.dataset, requirement_id=requirement_id)])
+        result = run_comparison(sample, nodes, Config.load(args.config), args.mode, args.output)
+        return {'output': str(args.output), 'requirement_id': sample.sample_id,
+                'metrics': result['metrics'], 'human_review': 'pending'}, 0
+    from .requirement_audit_run import AuditNeedsReview
+    try:
+        result = extract_requirement(sample, ModelClient(Config.load(args.config)), args.mode,
+                                     evidence_audit=audit, run_dir=args.output.with_suffix('.run') if audit else None)
+    except AuditNeedsReview as error:
+        return {'audit_status': 'needs_review', 'draft': str(args.output.with_suffix('.run') / 'draft.json'),
+                'message': str(error)}, 2
+    save_result(args.output, result, sample=sample)
+    return {'output': str(args.output), 'requirement_id': sample.sample_id, 'items': len(result['items']),
+            'history_events': len(result['history']), 'metrics': result['metrics']}, 0
 
 
 def run_official(args):
@@ -146,6 +221,7 @@ def run_series(args):
 
 
 def add_battle_arguments(commands):
+    from .coordinator import BATTLE_STAGES
     battle = commands.add_parser('battle', help='通过真实 Mario 员工出题、审题、修订与独立评测')
     actions = battle.add_subparsers(dest='battle_command', required=True)
     doctor = actions.add_parser('doctor', help='只读核对 Mario 工具/技能及可选 Docs 文档')
@@ -226,9 +302,9 @@ def add_sample_arguments(command, required=True):
     command.add_argument('--stage', required=required, choices=STAGES)
 
 
-def add_model_arguments(command):
+def add_model_arguments(command, modes=MODES):
     command.add_argument('--config', required=True, type=Path)
-    command.add_argument('--mode', choices=MODES, default='verified')
+    command.add_argument('--mode', choices=modes, default='verified')
 
 
 def discover(path, unit='requirement', sample_id=None):
@@ -292,6 +368,8 @@ def batch_extract(args):
 
 
 def run(args):
+    if args.command == 'requirement':
+        return run_requirement(args)
     if args.command == 'series':
         return run_series(args)
     if args.command == 'official':
@@ -318,8 +396,9 @@ def run(args):
                 raise ValueError('需要 --dataset/--sample-id 或完整的 --dialogue/--artifact/--stage')
             sample = load_sample(args.dialogue, args.artifact, args.stage)
         client = ModelClient(Config.load(args.config))
-        result = extract(sample, client, args.mode)
-        save_result(args.output, result)
+        result = extract(sample, client, args.mode,
+                         run_dir=args.output.with_suffix('.run') if args.mode == 'grounded' else None)
+        save_result(args.output, result, sample=sample)
         return {'output': str(args.output), 'items': len(result['items']), 'metrics': result['metrics']}, 0
     if args.command == 'batch':
         summary = batch_extract(args)
