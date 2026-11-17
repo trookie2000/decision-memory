@@ -14,6 +14,7 @@ from .client import ModelError
 from .context_sources import CONTEXT_POLICY, add_flow_headers, declared_source_ids, flow_context
 from .evaluation import digest
 from .field_grounding import validate_literal_grounding
+from .grounded_atoms import ATOM_POLICY, validate_atoms
 from .requirements import RequirementSample
 from .source_hints import HINT_POLICY, build_review_hints
 from .validation import validate_result
@@ -27,7 +28,8 @@ USER_ATTRIBUTION = re.compile(
     r'(?:要求|指定|否决|确认|决定|强调|提出|纠正|建议|反馈|表示|希望|认为|同意|拒绝|授权|指示|说)')
 POLICY = {'protocol': PROTOCOL, 'columns': COLUMNS, 'max_items': MAX_ITEMS,
           'max_questions': MAX_QUESTIONS, 'max_refs': MAX_REFS,
-          'max_expanded_bytes': MAX_EXPANDED_BYTES, 'user_attribution': USER_ATTRIBUTION.pattern}
+          'max_expanded_bytes': MAX_EXPANDED_BYTES, 'user_attribution': USER_ATTRIBUTION.pattern,
+          'atom_policy_digest': digest(ATOM_POLICY)}
 
 INSTRUCTIONS = '''你是研发知识提取器，只根据提供的对话与最终产物提取可复用知识。
 输入范围由 input_scope 和 nodes 明确声明。stage 只代表给定阶段；requirement 代表已给出的有序节点，
@@ -70,6 +72,12 @@ review_hints 是程序从本次全部原文检索的来源编号建议，不保�
 逐项处理 missing_symbols 和常见用户归因。absent_from_entire_input 的名字不得保留为自造标识符，
 按原文真实名称修订该规则；不能只为了检查通过删掉业务知识。核对建议来源以及全文，分别补齐各字段。
 检查尚未引用的产物候选是否提供遗漏的规则、理由或边界；不用为了覆盖编号强行增加条目。
+所有“未说明”字段都须主动重新检索。结论里已写出的原因、用途、风险或限定范围仍是已知内容，
+应在 reason/boundary 分别如实表达并给自己的来源；不能因为这些内容出现在结论里就称理由或边界未说明。
+对未知字段的提示只是检索线索；确实无依据时仍保留未说明，不编造原因和反向边界。
+后续节点能使早期理由失效：逐项核对 later_related_source_ids，不仅核对结论的最终状态，也核对理由与范围。
+每个 open_question 也要检查后续确认和最终产物，已解决或只是旧文档措辞的问题不得继续保留。
+missing_atoms 中的历史数值与大写常量也须由本字段引用；写40改120就须同时引到40和120，不能只引新值。
 '''
 PROMPT_HASH = hashlib.sha256((EXTRACT + REVIEW + digest(POLICY) + digest(HINT_POLICY)).encode()).hexdigest()
 
@@ -91,8 +99,8 @@ def source_packet(sample):
 
 
 def _literal(items):
-    return validate_literal_grounding({'items': items,
-        'memory_index': [{'knowledge_key': item['id']} for item in items]})
+    return {**validate_literal_grounding({'items': items,
+        'memory_index': [{'knowledge_key': item['id']} for item in items]}), 'atoms': validate_atoms(items)}
 
 
 def decode_payload(payload, sample, *, enforce_bindings=True, include_context=True):
