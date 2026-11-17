@@ -7,11 +7,12 @@ from dataclasses import replace
 from pathlib import Path
 
 from .evaluation import digest
+from .client import ModelOutputError
 from .requirement_audit import POLICY, POLICY_DATA, build_coverage_catalog, validate_evidence_audit
 from .requirement_grounding import reason_obligations, validate_grounding_review
 from .requirement_memory import compile_memory
 from .requirement_pipeline import EXTRACT, REVIEW, requirement_result
-from .storage import write_json
+from .storage import write_json, write_text
 
 AUDIT_INSTRUCTIONS = '''
 本轮开启 evidence-v1 证据准入和候选覆盖核查。复用本次复核，不请求其他模型。
@@ -100,6 +101,9 @@ class AuditRun:
         safe_fields = ('http_attempts', 'prompt_tokens', 'completion_tokens', 'seconds', 'status', 'transport_status')
         self.state['calls'] = [{'number': index, **{key: call.get(key) for key in safe_fields}}
                                for index, call in enumerate(self.client.calls, 1)]
+        for safe, call in zip(self.state['calls'], self.client.calls):
+            if 'response_diagnostic' in call:
+                safe['response_diagnostic'] = call['response_diagnostic']
         self.state['wall_seconds'] = round(time.monotonic() - self.started, 3)
         write_json(self.path / 'state.json', self.state, overwrite=True)
 
@@ -116,11 +120,25 @@ class AuditRun:
             try:
                 # Model-output/transport failures never enter the protocol repair block below.
                 payload = self.client.complete(system, user, strict_json=True)
-            except BaseException:
+            except BaseException as error:
                 calls = self.client.calls[before:]
                 step['call_numbers'] = list(range(before + 1, len(self.client.calls) + 1))
                 unknown = bool(calls and calls[-1].get('transport_status') == 'unknown')
                 step.update(status='unknown' if unknown else 'failed', finished_at=time.time())
+                transport = calls[-1].get('transport_status') if calls else None
+                step['provider_execution'] = ('response_received' if transport in ('received', 'http_error')
+                                              else 'unknown' if calls else 'not_sent')
+                step['failure_phase'] = ('transport' if unknown else 'parse' if isinstance(error, ModelOutputError)
+                                         else 'http' if transport == 'http_error'
+                                         else 'response' if calls else 'preflight')
+                if isinstance(error, ModelOutputError):
+                    if error.diagnostic is not None:
+                        step['response_diagnostic'] = error.diagnostic
+                    if error.response_text is not None:
+                        raw_filename = f'{number:02d}-{name}-{attempt}.invalid-response.txt'
+                        # write_text uses a private 0600 temporary file and atomic link.
+                        write_text(self.path / raw_filename, error.response_text)
+                        step['raw_response_file'] = raw_filename
                 self.state['status'] = step['status']
                 self.persist()
                 raise
@@ -135,6 +153,8 @@ class AuditRun:
                 result = validator(payload)
             except ValueError as error:
                 step['validation'] = 'invalid'
+                step['failure_phase'] = 'validation'
+                step['validation_error'] = str(error)[:600]
                 self.persist()
                 if attempt == 2:
                     write_json(self.path / 'draft.json', {'validation': 'invalid', 'payload': payload})

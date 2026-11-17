@@ -40,7 +40,7 @@
 
 **Files:** `decision_memory/client.py`；`decision_memory/requirement_audit_run.py`；`decision_memory/storage.py`；`tests/test_requirement_audit_cli.py`；`docs/requirement-memory.md`。
 
-**Interfaces:** `ModelOutputError` 增加可选 `response_text` 和 `diagnostic`；调用记录只携带安全诊断。`write_private_text(path, text)` 以 0600 权限保存本地内容。审计步骤新增 `failure_phase`、可选 `raw_response_file` 和诊断摘要。
+**Interfaces:** `ModelOutputError` 增加可选 `response_text` 和 `diagnostic`；调用记录只携带安全诊断。复用 `storage.write_text(path, text)` 的 0600 原子写入保存本地内容。审计步骤新增 `failure_phase`、可选 `raw_response_file` 和诊断摘要。
 
 - [ ] 写本地 HTTP 失败测试：严格 JSON 错误保存安全内容及解析位置，步骤为 response_received/parse，只有一次请求；截断、网络未知、HTTP 错误仍拒绝且不重发；认证值回显被脱敏；结构错误逐次记录。
 - [ ] 运行目标测试，确认诊断与状态断言失败。

@@ -2,6 +2,7 @@
 
 import json
 import http.client
+import hashlib
 import math
 import os
 import re
@@ -21,7 +22,10 @@ class ModelError(RuntimeError):
 
 
 class ModelOutputError(ValueError):
-    pass
+    def __init__(self, message, *, response_text=None, diagnostic=None):
+        super().__init__(message)
+        self.response_text = response_text
+        self.diagnostic = diagnostic
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -357,12 +361,36 @@ class ModelClient:
                     value = usage.get(name)
                     if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                         call[name] = value
+
+                def output_error(message, category, decode_error=None):
+                    # Keep only model content, never the envelope's HTTP headers.
+                    safe_content = content if isinstance(content, str) else None
+                    if safe_content is not None:
+                        for secret in sorted(set(sensitive_values), key=len, reverse=True):
+                            if secret:
+                                safe_content = safe_content.replace(secret, '[REDACTED]')
+                        # An invalid Unicode scalar must not break local diagnostics.
+                        safe_content = safe_content.encode('utf-8', errors='backslashreplace').decode('utf-8')
+                    encoded = safe_content.encode('utf-8') if safe_content is not None else None
+                    diagnostic = {'schema_version': 1, 'category': category,
+                        'finish_reason': choice.get('finish_reason'),
+                        'content_bytes': len(encoded) if encoded is not None else None,
+                        'content_sha256': hashlib.sha256(encoded).hexdigest() if encoded is not None else None,
+                        'code_fenced': bool(safe_content and safe_content.lstrip().startswith('```')),
+                        'redaction_applied': isinstance(content, str) and safe_content != content}
+                    if isinstance(decode_error, json.JSONDecodeError):
+                        diagnostic['json_error'] = {'line': decode_error.lineno, 'column': decode_error.colno,
+                                                    'position': decode_error.pos}
+                        diagnostic['json_error_source'] = 'original_response'
+                    call['response_diagnostic'] = diagnostic
+                    return ModelOutputError(message, response_text=safe_content, diagnostic=diagnostic)
+
                 if choice.get('finish_reason') == 'length':
-                    raise ModelOutputError('输出被 max_tokens 截断，请精简条目或提高上限')
+                    raise output_error('输出被 max_tokens 截断，请精简条目或提高上限', 'output_truncated')
                 if choice.get('finish_reason') != 'stop' or choice['message'].get('refusal'):
                     raise ModelError('模型未正常完成文本输出，请检查网关完成状态或拒绝原因')
                 if not isinstance(content, str):
-                    raise ModelOutputError('模型 content 必须为文本')
+                    raise output_error('模型 content 必须为文本', 'invalid_content')
             except (KeyError, IndexError, TypeError, json.JSONDecodeError, UnicodeDecodeError):
                 raise ModelOutputError('模型响应不符合 Chat Completions JSON 协议') from None
             if strict_json:
@@ -370,10 +398,14 @@ class ModelClient:
                     raise ValueError('非 JSON 数值')
                 try:
                     result = json.loads(content, parse_constant=invalid_constant)
-                except ValueError:
-                    raise ModelOutputError('审计模式需要完整有效 JSON，不修复截断或非 JSON 文本') from None
+                except ValueError as error:
+                    raise output_error('审计模式需要完整有效 JSON，不修复截断或非 JSON 文本',
+                                       'invalid_json', error) from None
             else:
-                result = parse_json(content)
+                try:
+                    result = parse_json(content)
+                except ModelOutputError:
+                    raise output_error('模型未返回完整 JSON，请缩小输出或提高 max_tokens', 'invalid_json') from None
             call['status'] = 'success'
             return result
         finally:

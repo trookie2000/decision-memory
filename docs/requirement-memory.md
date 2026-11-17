@@ -105,6 +105,8 @@ python3 -m decision_memory requirement validate \
 
 结果中的 `items` 只包含当前有效知识，每条都含结论、理由、边界及逐字段证据。来源编号形如 `D.N1.00002` 或 `A.N2.00003`，分别表示节点中的对话行或产物行。证据保存文件名、原始行号及消息编号，模型输入中的原文索引还标注发言角色。
 
+无依据的理由和边界使用 `未说明`、空 evidence。整字段为 `未说明。` 或 `未说明.` 时，程序只去除这一处句号，保存原文和规则 `unstated-punctuation-v1` 到字段的 `protocol_normalization`，并在事件重放时核对。结论、待确认事项、带证据的占位或夹杂业务解释的文字仍须通过原有校验。
+
 未开启审计的需求级新结果使用 `schema_version=2`。默认 `verified` 的第二次调用还返回 `grounding_review`，逐项说明当前知识的结论、理由和边界是否得到原文支持。程序检查判定与知识编号一一对应，拒绝缺项、重复项和残留的不支持判定。`baseline` 和 `artifact-only` 保持一次正常调用，`checks.field_grounding` 为 `not_reviewed`。
 
 理由可以部分已知。例如“原阈值过高，所以从 80 件降到 25 件”，只说明为什么降低，不说明为什么恰好选 25 件。原文明确具体取值原因未说明时，当前 reason 应同时保留已知解释和具体未知，并引用各自依据。只有“原因未说明”的引文不能支持另一段复杂业务理由。
@@ -171,6 +173,10 @@ python3 -m decision_memory requirement validate \
 结构修复须保留已有 needs_review、partial 或 unclear 标记。修复回复擅自清除这些标记时，程序拒绝发布通过结果。
 
 `result.run/state.json` 保存实现和配置摘要、逻辑步骤、逐次调用、HTTP 尝试、token、费用可确认性及墙钟时间，不保存凭证值或请求头。后续调用失败时，前一步已确认的用量和耗时仍可从 `calls` 读取。总用量缺失时保持未知，不记为零。
+
+步骤中的 `failure_phase` 区分请求前检查、HTTP 错误、传输、内容解析和结构校验。完整响应的 JSON 解析失败记为 `provider_execution=response_received`，不再标为执行未知。无效 JSON 或长度截断的内容保存在同一 run 的 `*.invalid-response.txt`，权限为 0600；文件写入前去除本次认证值，状态只保留文件名、结束原因、内容摘要和可得的 JSON 错误位置。错误位置针对原始响应，脱敏后的位置可能变化。文件仍可能含业务材料，应留在本地。
+
+严格审计拒绝围栏、截断或非 JSON 文本，不靠扩大重试次数修复。支持 JSON Mode 的网关可在 TOML 中设置 `json_mode=true`，请求将携带 `response_format={"type":"json_object"}`。网关是否支持须先验证；程序不会因参数被拒绝而自动退回其他模式。原响应已返回但格式无效时，先查看诊断，再用明确的新配置创建独立实验。
 
 同名 run 目录或 HTML 已存在时，extract 会拒绝执行，包括去掉审计开关的命令。首版没有自动续跑；先检查原回执和实际任务状态。未知请求未经核实，不换目录盲目重发。
 

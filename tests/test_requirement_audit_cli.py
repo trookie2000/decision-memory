@@ -1,5 +1,6 @@
 """Public CLI behavior using a real local HTTP server and no model credentials."""
 import copy
+import hashlib
 import json
 import os
 import subprocess
@@ -166,6 +167,8 @@ class AuditCliTests(unittest.TestCase):
             self.assertEqual(state['status'], 'unknown')
             self.assertEqual(state['steps'][0]['status'], 'completed')
             self.assertEqual(state['steps'][1]['status'], 'unknown')
+            self.assertEqual(state['steps'][1]['provider_execution'], 'unknown')
+            self.assertEqual(state['steps'][1]['failure_phase'], 'transport')
             self.assertTrue((root / 'result.run' / '01-extract-1.json').is_file())
             self.assertFalse(paths[2].exists())
             self.assertIn('calls', state)
@@ -219,6 +222,102 @@ class AuditCliTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2)
                 self.assertEqual(len(requests), 1)
                 self.assertEqual(self.state(root)['status'], 'failed')
+
+    def test_strict_json_failure_saves_private_content_and_received_transport(self):
+        content = '```json\n{"events":[],"note":"synthetic-private-model-text"}\n```'
+        with tempfile.TemporaryDirectory() as directory, model_server([
+                (200, completion(content))]) as (endpoint, requests):
+            root = Path(directory)
+            paths = self.fixture(root, endpoint, 'json_mode=true\n')
+            result = self.extract(paths)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(len(requests), 1)
+            self.assertEqual(requests[0]['response_format'], {'type': 'json_object'})
+            state = self.state(root)
+            step = state['steps'][0]
+            self.assertEqual(step['provider_execution'], 'response_received')
+            self.assertEqual(step['failure_phase'], 'parse')
+            diagnostic = step['response_diagnostic']
+            self.assertEqual(diagnostic['category'], 'invalid_json')
+            self.assertEqual(diagnostic['finish_reason'], 'stop')
+            self.assertEqual(diagnostic['json_error'], {'line': 1, 'column': 1, 'position': 0})
+            self.assertTrue(diagnostic['code_fenced'])
+            self.assertEqual(diagnostic['content_bytes'], len(content.encode('utf8')))
+            self.assertEqual(diagnostic['content_sha256'], hashlib.sha256(content.encode('utf8')).hexdigest())
+            raw = root / 'result.run' / step['raw_response_file']
+            self.assertEqual(raw.read_text(), content)
+            self.assertEqual(raw.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(state['calls'][0]['response_diagnostic'], diagnostic)
+            self.assertEqual(state['metrics']['prompt_tokens'], 100)
+            self.assertNotIn('synthetic-private-model-text', json.dumps(state))
+            self.assertNotIn('synthetic-private-model-text', result.stderr)
+            self.assertFalse(paths[2].exists())
+            self.assertEqual(self.extract(paths).returncode, 2)
+            self.assertEqual(len(requests), 1)
+
+    def test_json_error_position_and_length_stop_are_durable_without_repair(self):
+        invalid = completion('{\n  "events": [\n}')
+        truncated = completion('{"events":[')
+        truncated['choices'][0]['finish_reason'] = 'length'
+        for payload, category in ((invalid, 'invalid_json'), (truncated, 'output_truncated')):
+            with self.subTest(category=category), tempfile.TemporaryDirectory() as directory, model_server([
+                    (200, payload)]) as (endpoint, requests):
+                root = Path(directory)
+                result = self.extract(self.fixture(root, endpoint))
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(len(requests), 1)
+                step = self.state(root)['steps'][0]
+                self.assertEqual(step['provider_execution'], 'response_received')
+                self.assertEqual(step['failure_phase'], 'parse')
+                self.assertEqual(step['response_diagnostic']['category'], category)
+                if category == 'invalid_json':
+                    self.assertEqual(step['response_diagnostic']['json_error']['line'], 3)
+                    self.assertEqual(step['response_diagnostic']['json_error']['column'], 1)
+                else:
+                    self.assertEqual(step['response_diagnostic']['finish_reason'], 'length')
+                self.assertEqual((root / 'result.run' / step['raw_response_file']).read_text(),
+                                 payload['choices'][0]['message']['content'])
+
+    def test_model_credential_echo_is_removed_from_content_and_diagnostics(self):
+        secret, extra = 'synthetic-content-auth-value', 'synthetic-content-extra-header'
+        content = 'not JSON: ' + secret + ' Bearer ' + secret + ' ' + extra
+        with tempfile.TemporaryDirectory() as directory, model_server([
+                (200, completion(content))]) as (endpoint, requests):
+            root = Path(directory)
+            paths = self.fixture(root, endpoint)
+            paths[1].write_text(paths[1].read_text().replace('api_key_env=""', 'api_key_env="AUDIT_CONTENT_TOKEN"')
+                                + 'headers_env={"X-Test-Token"="AUDIT_CONTENT_EXTRA"}\n')
+            env = os.environ.copy()
+            env.update(AUDIT_CONTENT_TOKEN=secret, AUDIT_CONTENT_EXTRA=extra)
+            result = subprocess.run([sys.executable, '-m', 'decision_memory', 'requirement', 'extract',
+                '--manifest', str(paths[0]), '--config', str(paths[1]), '--output', str(paths[2]),
+                '--evidence-audit', 'v1'], cwd=ROOT, env=env, capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(len(requests), 1)
+            step = self.state(root)['steps'][0]
+            self.assertTrue(step['response_diagnostic']['redaction_applied'])
+            raw = root / 'result.run' / step['raw_response_file']
+            self.assertIn('[REDACTED]', raw.read_text())
+            for value in (secret, extra):
+                self.assertNotIn(value, result.stdout + result.stderr)
+                for path in (root / 'result.run').rglob('*'):
+                    if path.is_file():
+                        self.assertNotIn(value, path.read_text(), str(path))
+
+    def test_protocol_failure_records_the_error_before_bounded_repair(self):
+        first, final = replies()
+        with tempfile.TemporaryDirectory() as directory, model_server([
+                (200, completion({'events': []})), (200, completion(first)),
+                (200, completion(final))]) as (endpoint, requests):
+            root = Path(directory)
+            result = self.extract(self.fixture(root, endpoint))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(requests), 3)
+            step = self.state(root)['steps'][0]
+            self.assertEqual(step['provider_execution'], 'response_received')
+            self.assertEqual(step['failure_phase'], 'validation')
+            self.assertIn('open_questions', step['validation_error'])
+            self.assertEqual(step['validation'], 'invalid')
 
     def test_mode_conflicts_existing_runs_and_candidate_overflow_send_no_requests(self):
         with tempfile.TemporaryDirectory() as directory, model_server([]) as (endpoint, requests):
