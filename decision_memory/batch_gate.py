@@ -12,6 +12,8 @@ IMPLEMENTATION_FILES = ('__init__.py', 'batch_gate.py', 'battle_protocol.py', 'c
                         'comparison.py', 'coordinator.py', 'evaluation.py', 'pipeline.py', 'requirement_flow.py',
                         'prompts.py', 'requirement_memory.py', 'requirement_grounding.py', 'requirement_pipeline.py', 'requirement_protocol.py',
                         'requirements.py', 'review_v2.py', 'series.py', 'sources.py', 'storage.py', 'task_delivery.py', 'validation.py')
+IMPLEMENTATION_FILES += ('evidence_spans.py', 'requirement_audit.py', 'requirement_audit_run.py',
+                         'requirement_audit_report.py')
 
 
 def file_hash(path):

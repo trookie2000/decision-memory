@@ -124,12 +124,25 @@ def render_markdown(result):
     return '\n'.join(lines)
 
 
-def save_result(path: Path, result):
+def save_result(path: Path, result, *, sample=None):
     if path.suffix != '.json':
         raise ValueError('提取结果输出文件须使用 .json 扩展名')
     markdown = path.with_suffix('.md')
     if path.exists() or markdown.exists():
         raise ValueError('输出已存在，请指定新的输出文件或使用 batch --resume')
+    if result.get('schema_version') == 3 and result.get('scope') == 'requirement':
+        from .requirement_audit_report import render_audit_html
+        report = path.with_suffix('.audit.html')
+        if sample is None or report.exists():
+            raise ValueError('新审计结果需要完整原文和不存在的 HTML 报告路径')
+        # Verify and render everything before publishing; the success JSON is written last.
+        result['result_digest'] = result_digest(result)
+        validate_saved(result, sample)
+        rendered, html = render_markdown(result), render_audit_html(result, sample)
+        write_text(markdown, rendered)
+        write_text(report, html)
+        write_json(path, result)
+        return
     result['result_digest'] = result_digest(result)
     write_json(path, result)
     write_text(markdown, render_markdown(result))

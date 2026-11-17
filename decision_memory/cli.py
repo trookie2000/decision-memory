@@ -88,6 +88,8 @@ def add_requirement_arguments(commands):
         if action in ('extract', 'compare'):
             add_model_arguments(leaf)
             leaf.add_argument('--output', required=True, type=Path)
+            if action == 'extract':
+                leaf.add_argument('--evidence-audit', choices=('v1',), help='主动开启需求级证据准入和候选覆盖审计，仅 verified')
         elif action == 'inspect':
             leaf.add_argument('--output', type=Path)
         else:
@@ -100,6 +102,9 @@ def run_requirement(args):
     if args.manifest and args.requirement_id:
         raise ValueError('--manifest 不能同时传 --requirement-id')
     action = args.requirement_command
+    audit = getattr(args, 'evidence_audit', None)
+    if audit and args.mode != 'verified':
+        raise ValueError('--evidence-audit v1 仅支持 --mode verified')
     saved = read_json(args.result) if action == 'validate' else None
     requirement_id = args.requirement_id or (saved.get('requirement_id') if isinstance(saved, dict) else None)
     if args.dataset and action != 'inspect' and not requirement_id:
@@ -107,6 +112,8 @@ def run_requirement(args):
     if action == 'extract' and (args.output.suffix != '.json' or args.output.exists()
                                 or args.output.with_suffix('.md').exists()):
         raise ValueError('需要尚不存在的 .json 输出路径')
+    if action == 'extract' and (args.output.with_suffix('.run').exists() or args.output.with_suffix('.audit.html').exists()):
+        raise ValueError('审计 run 目录或报告已存在，请检查原回执；禁止自动重发')
     samples = ([load_requirement_manifest(args.manifest)] if args.manifest
                else discover_requirements(args.dataset, requirement_id))
     if action == 'inspect':
@@ -131,8 +138,14 @@ def run_requirement(args):
         result = run_comparison(sample, nodes, Config.load(args.config), args.mode, args.output)
         return {'output': str(args.output), 'requirement_id': sample.sample_id,
                 'metrics': result['metrics'], 'human_review': 'pending'}, 0
-    result = extract_requirement(sample, ModelClient(Config.load(args.config)), args.mode)
-    save_result(args.output, result)
+    from .requirement_audit_run import AuditNeedsReview
+    try:
+        result = extract_requirement(sample, ModelClient(Config.load(args.config)), args.mode,
+                                     evidence_audit=audit, run_dir=args.output.with_suffix('.run') if audit else None)
+    except AuditNeedsReview as error:
+        return {'audit_status': 'needs_review', 'draft': str(args.output.with_suffix('.run') / 'draft.json'),
+                'message': str(error)}, 2
+    save_result(args.output, result, sample=sample)
     return {'output': str(args.output), 'requirement_id': sample.sample_id, 'items': len(result['items']),
             'history_events': len(result['history']), 'metrics': result['metrics']}, 0
 

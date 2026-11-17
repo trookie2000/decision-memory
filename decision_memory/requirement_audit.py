@@ -103,6 +103,9 @@ def _current_evidence(value, items, sample):
         offset = ref['quote'].find(quote)
         if offset < 0 or ref['quote'].find(quote, offset + 1) >= 0:
             raise ValueError('focus_quote 必须在完整引文内唯一匹配')
+        focused = source_span(sample, ref['source_id'], ref['start'] + offset, ref['start'] + offset + len(quote))
+        if not meaningful_overlap(focused, focused, sample):
+            raise ValueError('证据焦点必须包含非空白、非纯标点的业务内容')
         focus[identity] = (ref['start'] + offset, ref['start'] + offset + len(quote))
         normalized.append(dict(row))
     spans = []

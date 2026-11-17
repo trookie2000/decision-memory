@@ -158,6 +158,18 @@ class RequirementAuditTests(unittest.TestCase):
         self.assertEqual(result['audit_status'], 'passed')
         self.assertEqual(result['evidence_spans'][0]['focus_end'], 9)
 
+    def test_punctuation_only_focus_cannot_hide_all_actual_business_evidence(self):
+        quote = '仅商品详情缓存改造；周五上线。'
+        current = event([ref('D.N1.00002', quote), ref('A.N1.00002', quote)])
+        value = audit_reply()
+        value['admission_checks'][0]['direct'][0]['quote'] = quote
+        value['evidence_focus'] = [{'knowledge_key': 'detail-cache', 'field': 'conclusion',
+            **ref(source, quote), 'focus_quote': '；'} for source in ('D.N1.00002', 'A.N1.00002')]
+        value['coverage_checks'] = [coverage(unit, 'non_reusable', semantic='not_applicable', exclusion='format')
+                                    for unit in ('U001', 'U002', 'U003')]
+        with self.assertRaises(ValueError):
+            self.validate(value, events=[current])
+
     def test_confirmed_proposal_preserves_both_roles_and_order(self):
         context = sample('**AGENT：**\n建议按变更刷新缓存。\n**用户：**\n对。', '按变更刷新缓存。')
         current = event([ref('D.N1.00002', '建议按变更刷新缓存'), ref('D.N1.00004', '对'), ref('A.N1.00001', '按变更刷新缓存')])

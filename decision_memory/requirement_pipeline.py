@@ -61,12 +61,22 @@ PROMPT_HASH = hashlib.sha256((EXTRACT + REVIEW).encode()).hexdigest()
 REPLAY_FIELDS = ('items', 'open_questions', 'events', 'memory_index', 'history', 'relations', 'review_notes')
 
 
-def run_signature(sample, client, mode):
-    return hashlib.sha256(json.dumps([sample.fingerprint, client.config.public(), mode, PROMPT_HASH, __version__],
+def run_signature(sample, client, mode, evidence_audit=None):
+    values = [sample.fingerprint, client.config.public(), mode, PROMPT_HASH, __version__]
+    if evidence_audit is not None:
+        from .requirement_audit_run import AUDIT_PROMPT_HASH
+        values[1] = replace(client.config, retries=0).public()
+        values.extend([evidence_audit, AUDIT_PROMPT_HASH])
+    return hashlib.sha256(json.dumps(values,
                                      sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
-def extract_requirement(sample, client, mode='verified'):
+def extract_requirement(sample, client, mode='verified', *, evidence_audit=None, run_dir=None):
+    if evidence_audit is not None:
+        if evidence_audit != 'v1' or mode != 'verified' or run_dir is None:
+            raise ValueError('证据审计 v1 仅支持 verified，需要独立 run_dir')
+        from .requirement_audit_run import extract_audited_requirement
+        return extract_audited_requirement(sample, client, run_dir)
     if mode not in MODES:
         raise ValueError('不支持的提取模式')
     context = sample
@@ -88,16 +98,25 @@ def extract_requirement(sample, client, mode='verified'):
             return replayed, proof
 
         result, grounding = checked_call(client, REVIEW, review_input, reviewed)
-    return {**result, 'schema_version': 2, 'scope': 'requirement', 'requirement_id': sample.sample_id,
+    return requirement_result(sample, client, mode, result, grounding)
+
+
+def requirement_result(sample, client, mode, result, grounding, audit=None):
+    value = {**result, 'schema_version': 3 if audit is not None else 2, 'scope': 'requirement', 'requirement_id': sample.sample_id,
             'sample_id': sample.sample_id, 'stage': 'requirement', 'nodes': list(sample.nodes), 'mode': mode,
             'input_fingerprint': sample.fingerprint, 'input_file_hashes': sample.file_hashes,
-            'run_signature': run_signature(sample, client, mode), 'prompt_hash': PROMPT_HASH,
+            'run_signature': run_signature(sample, client, mode, 'v1' if audit is not None else None), 'prompt_hash': PROMPT_HASH,
             'created_at': datetime.now(timezone.utc).isoformat(), 'version': __version__,
             'model': client.config.model, 'metrics': client.metrics(), 'calls': list(client.calls),
             'grounding_review': grounding,
             'checks': {'exact_citations': 'passed', 'event_replay': 'passed', 'model_review': mode == 'verified',
                        'field_grounding': 'model_reviewed' if mode == 'verified' else 'not_reviewed',
                        'human_review': 'pending', 'empty_result': not bool(result['items'])}}
+    if audit is not None:
+        from .requirement_audit_run import AUDIT_PROMPT_HASH
+        value.update(evidence_audit=audit, evidence_audit_version='v1', prompt_hash=AUDIT_PROMPT_HASH)
+        value['checks']['evidence_audit'] = 'model_reviewed_program_checked'
+    return value
 
 
 def validate_requirement_saved(result, sample, client=None, mode=None):
@@ -113,7 +132,8 @@ def validate_requirement_saved(result, sample, client=None, mode=None):
     saved_mode = result.get('mode')
     if saved_mode not in MODES or (mode is not None and mode != saved_mode):
         raise ValueError('需求提取模式不匹配')
-    if client and result.get('run_signature') != run_signature(sample, client, saved_mode):
+    audit_version = result.get('evidence_audit_version')
+    if client and result.get('run_signature') != run_signature(sample, client, saved_mode, audit_version):
         raise ValueError('运行配置或提示词已改变，请使用新的输出目录')
     context = sample
     if saved_mode == 'artifact-only':
@@ -122,9 +142,11 @@ def validate_requirement_saved(result, sample, client=None, mode=None):
     if any(result.get(key) != replayed[key] for key in REPLAY_FIELDS):
         raise ValueError('当前知识或历史记录与事件重放不一致')
     schema = result.get('schema_version')
-    if type(schema) is not int or schema not in (1, 2):
+    if type(schema) is not int or schema not in (1, 2, 3):
         raise ValueError('需求结果 schema_version 不支持')
-    if schema == 2:
+    if schema < 3 and any(k in result for k in ('evidence_audit', 'evidence_audit_version')):
+        raise ValueError('旧 schema 不能携带新审计协议')
+    if schema in (2, 3):
         expected = 'model_reviewed' if saved_mode == 'verified' else 'not_reviewed'
         checks = result.get('checks')
         if (not isinstance(checks, dict) or checks.get('field_grounding') != expected
@@ -137,4 +159,12 @@ def validate_requirement_saved(result, sample, client=None, mode=None):
                 raise ValueError('保存的字段复核与原文重放不一致')
         elif result.get('grounding_review') is not None:
             raise ValueError('未复核模式不能携带字段复核结果')
+    if schema == 3:
+        from .requirement_audit import validate_evidence_audit
+        if (saved_mode != 'verified' or audit_version != 'v1'
+                or result['checks'].get('evidence_audit') != 'model_reviewed_program_checked'):
+            raise ValueError('审计模式和状态不匹配')
+        audit = validate_evidence_audit(result.get('evidence_audit'), replayed, proof, context)
+        if audit != result.get('evidence_audit') or audit['audit_status'] != 'passed':
+            raise ValueError('审计结果未通过，不能作为成功结果读取')
     return result

@@ -288,7 +288,7 @@ class ModelClient:
             headers[header] = value
         return headers
 
-    def complete(self, system: str, user: str) -> dict:
+    def complete(self, system: str, user: str, *, strict_json: bool = False):
         if len(system) + len(user) > self.config.max_input_chars:
             raise ModelError('输入超过 max_input_chars，请按完整阶段拆分或调整上限')
         body = {'model': self.config.model, 'stream': self.config.stream, 'max_tokens': self.config.max_tokens,
@@ -303,7 +303,8 @@ class ModelClient:
         sensitive_values = [value for name, value in headers.items() if name.lower() not in ('content-type', 'accept')]
         sensitive_values += [value.removeprefix('Bearer ') for value in sensitive_values]
         request = urllib.request.Request(self.config.endpoint, data=json.dumps(body).encode(), headers=headers, method='POST')
-        call = {'http_attempts': 0, 'prompt_tokens': None, 'completion_tokens': None, 'seconds': 0, 'status': 'failed'}
+        call = {'http_attempts': 0, 'prompt_tokens': None, 'completion_tokens': None, 'seconds': 0,
+                'status': 'failed', 'transport_status': 'unknown'}
         self.calls.append(call)
         started = time.monotonic()
         try:
@@ -317,9 +318,11 @@ class ModelClient:
                             data = response.read(8_000_001)
                     if not self.config.stream and len(data) > 8_000_000:
                         raise ModelError('模型响应超过 8 MB 上限')
+                    call['transport_status'] = 'received'
                     break
                 except urllib.error.HTTPError as error:
                     code = error.code
+                    call['transport_status'] = 'http_error'
                     retry_after = error.headers.get('Retry-After', '')
                     try:
                         if code not in (408, 429, 500, 502, 503, 504) or attempt == self.config.retries:
@@ -329,6 +332,7 @@ class ModelClient:
                     delay = float(retry_after) if retry_after.isdigit() else 2 ** attempt
                     time.sleep(min(delay, 10))
                 except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException):
+                    call['transport_status'] = 'unknown'
                     if attempt == self.config.retries:
                         raise ModelError('模型接口连接失败、响应中断或超时') from None
                     time.sleep(2 ** attempt)
@@ -352,7 +356,15 @@ class ModelClient:
                     raise ModelOutputError('模型 content 必须为文本')
             except (KeyError, IndexError, TypeError, json.JSONDecodeError, UnicodeDecodeError):
                 raise ModelOutputError('模型响应不符合 Chat Completions JSON 协议') from None
-            result = parse_json(content)
+            if strict_json:
+                def invalid_constant(_):
+                    raise ValueError('非 JSON 数值')
+                try:
+                    result = json.loads(content, parse_constant=invalid_constant)
+                except ValueError:
+                    raise ModelOutputError('审计模式需要完整有效 JSON，不修复截断或非 JSON 文本') from None
+            else:
+                result = parse_json(content)
             call['status'] = 'success'
             return result
         finally:
