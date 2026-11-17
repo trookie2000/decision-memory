@@ -213,6 +213,8 @@ def extract_grounded(sample, client, run_dir):
                   'metrics': client.metrics(), 'calls': client.calls,
                   'checks': {'exact_citations': 'passed', 'model_review': True, 'human_review': 'pending',
                              'official_score': None, 'empty_result': not bool(reviewed['items'])}}
+        if whole:
+            result['requirement_id'] = sample.sample_id
         if reviewed['grounding_proof']['status'] == 'needs_review':
             write_json(run.path / 'draft.json', result)
             run.state['status'] = 'needs_review'
@@ -242,6 +244,7 @@ def validate_grounded_saved(result, sample, client=None, mode=None):
             or result.get('prompt_hash') != PROMPT_HASH or result.get('input_scope') != expected_scope
             or result.get('scope') != expected_scope or result.get('sample_id') != sample.sample_id
             or result.get('stage') != sample.stage or result.get('nodes') != (list(sample.nodes) if whole else [])
+            or (whole and result.get('requirement_id') != sample.sample_id)
             or result.get('input_fingerprint') != sample.fingerprint or result.get('input_file_hashes') != sample.file_hashes):
         raise ValueError('grounded 协议、输入范围或版本不匹配')
     if result.get('result_digest') != result_digest(result):

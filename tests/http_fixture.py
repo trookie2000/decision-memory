@@ -12,11 +12,13 @@ def completion(content):
 
 
 @contextmanager
-def model_server(responses):
+def model_server(responses, *, received_headers=None):
     requests = []
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
+            if received_headers is not None:
+                received_headers.append(dict(self.headers))
             requests.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))))
             status, payload = responses.pop(0) if responses else (500, {'error': 'no fixture response'})
             self.send_response(status)

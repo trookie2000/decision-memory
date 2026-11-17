@@ -189,6 +189,7 @@ class GroundedTests(unittest.TestCase):
                 result = extract_grounded(whole, client, root / 'run')
             self.assertEqual(len(requests), 2)
             self.assertEqual(result['input_scope'], 'requirement')
+            self.assertEqual(result['requirement_id'], whole.sample_id)
             self.assertEqual(result['nodes'], list(whole.nodes))
             save_result(root / 'result.json', result, sample=whole)
             validate_saved(read_json(root / 'result.json'), whole)

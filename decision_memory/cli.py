@@ -27,6 +27,17 @@ def parser():
     single.add_argument('--sample-id', help='--dataset 中的完整阶段编号')
     add_model_arguments(single, modes=STAGE_MODES)
     single.add_argument('--output', required=True, type=Path)
+    judge = commands.add_parser('run', help='有限本地评委运行，一次生成 JSON/Markdown/HTML 与调用回执')
+    source = judge.add_mutually_exclusive_group(required=True)
+    source.add_argument('--dataset', type=Path)
+    source.add_argument('--manifest', type=Path)
+    judge.add_argument('--scope', choices=('stage', 'requirement'), required=True)
+    judge.add_argument('--sample-id')
+    judge.add_argument('--requirement-id')
+    judge.add_argument('--config', required=True, type=Path)
+    judge.add_argument('--mode', choices=STAGE_MODES, default='grounded')
+    judge.add_argument('--output', required=True, type=Path)
+    judge.add_argument('--max-http-attempts', type=int, default=32)
     batch = commands.add_parser('batch', help='对官方格式样本批量提取')
     batch.add_argument('--dataset', required=True, type=Path)
     add_model_arguments(batch)
@@ -354,6 +365,14 @@ def batch_extract(args):
 
 
 def run(args):
+    if args.command == 'run':
+        from .judge_run import execute_run, load_run_samples
+        samples = load_run_samples(dataset=args.dataset, manifest=args.manifest, scope=args.scope,
+                                   sample_id=args.sample_id, requirement_id=args.requirement_id)
+        report = execute_run(samples, Config.load(args.config), args.output, scope=args.scope, mode=args.mode,
+                             max_http_attempts=args.max_http_attempts)
+        return {'output': str(args.output), 'status': report['status'], 'succeeded': report['succeeded'],
+                'failed': report['failed'], 'metrics': report['metrics'], 'quality': report['quality']}, (0 if report['status'] == 'completed' else 2)
     if args.command == 'requirement':
         return run_requirement(args)
     if args.command == 'series':

@@ -4,6 +4,10 @@
 
 Python 3.11+。运行时仅使用标准库。默认输出 JSON 和 Markdown，可供下一阶段 Agent 读取。
 
+评委可用 `python3 -m decision_memory run --dataset 样本.zip --scope stage --config 模型.toml --output 新目录`。
+一次生成 JSON、Markdown、HTML 和真实调用回执；点击 HTML 来源可查看原文。完整需求改用 `--scope requirement`。
+新入口的 grounded 模式正在独立验收，模型复核不代表正式质量分。配置、失败处理和报告说明见 [评委本地运行](docs/judge-run.md)。
+
 ## 当前验证范围
 
 新增 `requirement inspect/extract/validate/compare`，可通过清单读取分析、设计、编码等节点，或组合现有数据集中的分析与设计材料。需求级 `verified` 正常调用 2 次模型；旧阶段流程保持原行为。整需求协调器已接入原员工出题与 v2 分轨评分，批次先冻结所有题目，再比较整需求与逐节点方法。工程验证与真实模型效果分别记录，操作说明见 [完整需求提取](docs/requirement-memory.md) 和 [整需求六例对照](docs/coordinator.md#整需求的六例对照)。
