@@ -64,17 +64,25 @@ REPLAY_FIELDS = ('items', 'open_questions', 'events', 'memory_index', 'history',
 def run_signature(sample, client, mode, evidence_audit=None):
     values = [sample.fingerprint, client.config.public(), mode, PROMPT_HASH, __version__]
     if evidence_audit is not None:
-        from .requirement_audit_run import AUDIT_PROMPT_HASH
+        if evidence_audit == 'v2':
+            from .requirement_audit_v2 import AUDIT_V2_PROMPT_HASH as audit_hash
+        elif evidence_audit == 'v1':
+            from .requirement_audit_run import AUDIT_PROMPT_HASH as audit_hash
+        else:
+            raise ValueError('不支持的证据审计版本')
         values[1] = replace(client.config, retries=0).public()
-        values.extend([evidence_audit, AUDIT_PROMPT_HASH])
+        values.extend([evidence_audit, audit_hash])
     return hashlib.sha256(json.dumps(values,
                                      sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
 def extract_requirement(sample, client, mode='verified', *, evidence_audit=None, run_dir=None):
     if evidence_audit is not None:
-        if evidence_audit != 'v1' or mode != 'verified' or run_dir is None:
-            raise ValueError('证据审计 v1 仅支持 verified，需要独立 run_dir')
+        if evidence_audit not in ('v1', 'v2') or mode != 'verified' or run_dir is None:
+            raise ValueError('证据审计仅支持 v1/v2 verified，需要独立 run_dir')
+        if evidence_audit == 'v2':
+            from .requirement_audit_v2 import extract_audited_requirement_v2
+            return extract_audited_requirement_v2(sample, client, run_dir)
         from .requirement_audit_run import extract_audited_requirement
         return extract_audited_requirement(sample, client, run_dir)
     if mode not in MODES:
@@ -101,11 +109,12 @@ def extract_requirement(sample, client, mode='verified', *, evidence_audit=None,
     return requirement_result(sample, client, mode, result, grounding)
 
 
-def requirement_result(sample, client, mode, result, grounding, audit=None):
-    value = {**result, 'schema_version': 3 if audit is not None else 2, 'scope': 'requirement', 'requirement_id': sample.sample_id,
+def requirement_result(sample, client, mode, result, grounding, audit=None, *, audit_version='v1', literal_grounding=None):
+    value = {**result, 'schema_version': (4 if audit_version == 'v2' else 3) if audit is not None else 2,
+            'scope': 'requirement', 'requirement_id': sample.sample_id,
             'sample_id': sample.sample_id, 'stage': 'requirement', 'nodes': list(sample.nodes), 'mode': mode,
             'input_fingerprint': sample.fingerprint, 'input_file_hashes': sample.file_hashes,
-            'run_signature': run_signature(sample, client, mode, 'v1' if audit is not None else None), 'prompt_hash': PROMPT_HASH,
+            'run_signature': run_signature(sample, client, mode, audit_version if audit is not None else None), 'prompt_hash': PROMPT_HASH,
             'created_at': datetime.now(timezone.utc).isoformat(), 'version': __version__,
             'model': client.config.model, 'metrics': client.metrics(), 'calls': list(client.calls),
             'grounding_review': grounding,
@@ -113,8 +122,14 @@ def requirement_result(sample, client, mode, result, grounding, audit=None):
                        'field_grounding': 'model_reviewed' if mode == 'verified' else 'not_reviewed',
                        'human_review': 'pending', 'empty_result': not bool(result['items'])}}
     if audit is not None:
-        from .requirement_audit_run import AUDIT_PROMPT_HASH
-        value.update(evidence_audit=audit, evidence_audit_version='v1', prompt_hash=AUDIT_PROMPT_HASH)
+        if audit_version == 'v2':
+            from .requirement_audit_v2 import AUDIT_V2_PROMPT_HASH as audit_hash
+            value.update(model_evidence_format='source-id-v1', source_format='columnar-v1',
+                         literal_grounding=literal_grounding)
+            value['checks']['literal_grounding'] = 'program_checked'
+        else:
+            from .requirement_audit_run import AUDIT_PROMPT_HASH as audit_hash
+        value.update(evidence_audit=audit, evidence_audit_version=audit_version, prompt_hash=audit_hash)
         value['checks']['evidence_audit'] = 'model_reviewed_program_checked'
     return value
 
@@ -142,11 +157,13 @@ def validate_requirement_saved(result, sample, client=None, mode=None):
     if any(result.get(key) != replayed[key] for key in REPLAY_FIELDS):
         raise ValueError('当前知识或历史记录与事件重放不一致')
     schema = result.get('schema_version')
-    if type(schema) is not int or schema not in (1, 2, 3):
+    if type(schema) is not int or schema not in (1, 2, 3, 4):
         raise ValueError('需求结果 schema_version 不支持')
     if schema < 3 and any(k in result for k in ('evidence_audit', 'evidence_audit_version')):
         raise ValueError('旧 schema 不能携带新审计协议')
-    if schema in (2, 3):
+    if schema < 4 and any(k in result for k in ('model_evidence_format', 'source_format', 'literal_grounding')):
+        raise ValueError('旧 schema 不能携带编号证据协议')
+    if schema in (2, 3, 4):
         expected = 'model_reviewed' if saved_mode == 'verified' else 'not_reviewed'
         checks = result.get('checks')
         if (not isinstance(checks, dict) or checks.get('field_grounding') != expected
@@ -159,12 +176,23 @@ def validate_requirement_saved(result, sample, client=None, mode=None):
                 raise ValueError('保存的字段复核与原文重放不一致')
         elif result.get('grounding_review') is not None:
             raise ValueError('未复核模式不能携带字段复核结果')
-    if schema == 3:
+    if schema in (3, 4):
         from .requirement_audit import validate_evidence_audit
-        if (saved_mode != 'verified' or audit_version != 'v1'
+        if (saved_mode != 'verified' or audit_version != ('v2' if schema == 4 else 'v1')
                 or result['checks'].get('evidence_audit') != 'model_reviewed_program_checked'):
             raise ValueError('审计模式和状态不匹配')
         audit = validate_evidence_audit(result.get('evidence_audit'), replayed, proof, context)
         if audit != result.get('evidence_audit') or audit['audit_status'] != 'passed':
             raise ValueError('审计结果未通过，不能作为成功结果读取')
+    if schema == 4:
+        from .evidence_ids import validate_reference_expansion
+        from .field_grounding import validate_literal_grounding
+        from .requirement_audit_v2 import AUDIT_V2_PROMPT_HASH
+        if (result.get('model_evidence_format') != 'source-id-v1' or result.get('source_format') != 'columnar-v1'
+                or result.get('prompt_hash') != AUDIT_V2_PROMPT_HASH
+                or result['checks'].get('literal_grounding') != 'program_checked'):
+            raise ValueError('编号证据格式或策略版本不匹配')
+        validate_reference_expansion(result, context)
+        if result.get('literal_grounding') != validate_literal_grounding(replayed):
+            raise ValueError('保存的实现符号证明与逐字段引文不一致')
     return result

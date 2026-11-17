@@ -130,7 +130,7 @@ def save_result(path: Path, result, *, sample=None):
     markdown = path.with_suffix('.md')
     if path.exists() or markdown.exists():
         raise ValueError('输出已存在，请指定新的输出文件或使用 batch --resume')
-    if result.get('schema_version') == 3 and result.get('scope') == 'requirement':
+    if result.get('schema_version') in (3, 4) and result.get('scope') == 'requirement':
         from .requirement_audit_report import render_audit_html
         report = path.with_suffix('.audit.html')
         if sample is None or report.exists():

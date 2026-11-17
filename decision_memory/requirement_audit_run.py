@@ -79,7 +79,7 @@ def _review_markers(payload):
 
 
 class AuditRun:
-    def __init__(self, path, sample, client, requested):
+    def __init__(self, path, sample, client, requested, *, prompt_hash=None):
         self.path, self.client = Path(path), client
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -89,7 +89,8 @@ class AuditRun:
         from .batch_gate import implementation_signature
         self.state = {'schema_version': 1, 'status': 'running', 'pid': os.getpid(),
                       'input_fingerprint': sample.fingerprint, 'input_file_hashes': sample.file_hashes,
-                      'implementation_digest': digest(implementation_signature()), 'prompt_hash': AUDIT_PROMPT_HASH,
+                      'implementation_digest': digest(implementation_signature()),
+                      'prompt_hash': prompt_hash or AUDIT_PROMPT_HASH,
                       'requested_config_digest': digest(requested), 'effective_config': client.config.public(),
                       'effective_config_digest': digest(client.config.public()),
                       'transport_policy': 'no-auto-http-retry', 'steps': [], 'started_at': time.time()}

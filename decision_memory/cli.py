@@ -89,7 +89,7 @@ def add_requirement_arguments(commands):
             add_model_arguments(leaf)
             leaf.add_argument('--output', required=True, type=Path)
             if action == 'extract':
-                leaf.add_argument('--evidence-audit', choices=('v1',), help='主动开启需求级证据准入和候选覆盖审计，仅 verified')
+                leaf.add_argument('--evidence-audit', choices=('v1', 'v2'), help='主动开启需求级证据准入和候选覆盖审计，仅 verified')
         elif action == 'inspect':
             leaf.add_argument('--output', type=Path)
         else:
@@ -104,7 +104,7 @@ def run_requirement(args):
     action = args.requirement_command
     audit = getattr(args, 'evidence_audit', None)
     if audit and args.mode != 'verified':
-        raise ValueError('--evidence-audit v1 仅支持 --mode verified')
+        raise ValueError('--evidence-audit 仅支持 --mode verified')
     saved = read_json(args.result) if action == 'validate' else None
     requirement_id = args.requirement_id or (saved.get('requirement_id') if isinstance(saved, dict) else None)
     if args.dataset and action != 'inspect' and not requirement_id:
