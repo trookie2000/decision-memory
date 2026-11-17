@@ -138,7 +138,8 @@ def run_requirement(args):
     elif directory_input:
         samples = discover_requirements(args.dataset, sample_id=requirement_id)
     else:
-        samples = discover_manifest_requirements(args.dataset, requirement_id)
+        samples = discover_manifest_requirements(args.dataset, requirement_id,
+                    include_supplements=action != 'validate' or saved_contract is not None)
     if action == 'inspect':
         summary = {'requirements': [{'requirement_id': sample.sample_id, 'nodes': describe_input(sample)['nodes'],
                                     'input_contract': describe_input(sample),
@@ -154,6 +155,7 @@ def run_requirement(args):
         validate_saved(saved, sample)
         replay = 'snapshot_replay' if saved.get('mode') == 'grounded' else 'event_replay'
         return {'requirement_id': sample.sample_id, 'exact_citations': 'passed', replay: 'passed',
+                'material_scope': 'declared_input_contract' if saved_contract is not None else 'legacy_declared_node_pairs',
                 'items': len(saved['items']), 'semantic_quality': 'requires_human_review'}, 0
     if action == 'compare':
         from .comparison import run_comparison

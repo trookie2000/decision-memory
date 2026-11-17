@@ -14,7 +14,7 @@ def describe_input(sample):
     whole = sample.stage == REQUIREMENT
     if isinstance(sample, RequirementSample):
         nodes = [dict(node) for node in sample.nodes]
-        locations = {key: {'node_id': nodes[sample.node_order(key)]['id'],
+        locations = {key: {'node_id': nodes[sample.node_order(key)]['id'] if sample.node_order(key) is not None else None,
                            'node_order': sample.node_order(key)} for key in sample.catalog}
     elif whole:
         nodes = [{'id': str(number), 'stage': sample.node_stages[number], 'order': order,

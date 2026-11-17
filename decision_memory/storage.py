@@ -147,7 +147,7 @@ def render_markdown(result):
         lines.extend(['## 变更历史', '', '已失效或已替换的历史版本不作为现行知识。', ''])
         for event in result['history']:
             lines.extend([f'### {event["id"]} · {event["operation"]} · {event["status"]}', '',
-                          f'知识 `{event["knowledge_key"]}`，节点 `{event["node_id"]}`，版本 {event["version"]}。', ''])
+                          f'知识 `{event["knowledge_key"]}`，节点 `{event["node_id"] if event["node_id"] is not None else "未提供（补充材料）"}`，版本 {event["version"]}。', ''])
             if 'item' in event:
                 for name, label in (('conclusion', '结论'), ('reason', '理由'), ('boundary', '边界')):
                     lines.extend([f'{label}：{event["item"][name]["text"]}', ''])

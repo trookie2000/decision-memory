@@ -31,13 +31,17 @@ def source_packet(sample):
     rows = []
     for key, source in sample.catalog.items():
         order = sample.node_order(key)
-        rows.append([key, sample.nodes[order]['id'], order, source.file, source.line,
+        rows.append([key, sample.nodes[order]['id'] if order is not None else None, order, source.file, source.line,
                      source.role, source.message, source.text])
     fragments = [[key, ref['source_id'], ref['quote']] for key, ref in reference_catalog(sample).items()
                  if key not in sample.catalog]
+    extra = {}
+    if sample.has_supplements:
+        from .input_contract import describe_input
+        extra['documents'] = describe_input(sample)['documents']
     return json.dumps({'scope': 'requirement', 'requirement_id': sample.sample_id,
         'source_format': 'columnar-v1', 'nodes': sample.nodes, 'source_columns': SOURCE_COLUMNS, 'sources': rows,
-        'fragment_columns': ['reference_id', 'source_id', 'text'], 'source_fragments': fragments},
+        'fragment_columns': ['reference_id', 'source_id', 'text'], 'source_fragments': fragments, **extra},
         ensure_ascii=False, separators=(',', ':'))
 
 

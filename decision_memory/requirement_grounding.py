@@ -3,6 +3,8 @@ import re
 
 from .evaluation import digest
 from .validation import validate_evidence
+from .requirements import resolves_source
+from .requirement_memory import current_order
 
 FIELDS = ('conclusion', 'reason', 'boundary')
 UNKNOWN_REASON = re.compile(
@@ -43,9 +45,7 @@ def validate_grounding_review(value, compiled, sample):
         raise ValueError('字段复核与当前知识摘要不匹配')
     items = {row['knowledge_key']: compiled['items'][index]
              for index, row in enumerate(compiled['memory_index'])}
-    node_orders = {node['id']: index for index, node in enumerate(sample.nodes)}
-    events = {event['id']: event for event in compiled['events']}
-    positions = {row['knowledge_key']: node_orders[events[row['event_id']]['node_id']]
+    positions = {row['knowledge_key']: current_order(compiled, sample, row['knowledge_key'])
                  for row in compiled['memory_index']}
     expected = {(key, field) for key in items for field in FIELDS}
     fields = value.get('fields')
@@ -106,13 +106,13 @@ def validate_grounding_review(value, compiled, sample):
                     raise ValueError('部分理由未知需要 partial 字段判定')
                 if not any(_quotes_gap(ref, gap) for ref in reason['evidence']):
                     raise ValueError('部分理由未知需要 reason 中的对应原文证据')
-            if any(sample.node_order(ref['source_id']) > positions[key] for ref in evidence):
+            if any(not sample.available_at(ref['source_id'], positions[key]) for ref in evidence):
                 raise ValueError('理由未知不能用晚于当前知识的声明补证据；请更新事件')
         elif status in ('superseded', 'out_of_scope'):
             if key is not None or row['unknown_text']:
                 raise ValueError('非保留的理由未知不能关联当前知识或补写未知正文')
             if status == 'superseded' and not any(
-                    sample.node_order(ref['source_id']) > sample.node_order(source_id) for ref in evidence):
+                    resolves_source(sample, ref['source_id'], source_id) for ref in evidence):
                 raise ValueError('理由未知已解决或取消必须提供更晚节点的依据')
             if status == 'out_of_scope' and any(
                     _quotes_gap(ref, gap) for item in items.values()

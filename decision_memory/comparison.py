@@ -86,6 +86,8 @@ def _raw_results(sample, nodes, root, config=None):
 def run_comparison(sample, nodes, config, mode, output):
     if mode not in MODES:
         raise ValueError('整需求比较模式无效')
+    if sample.has_supplements:
+        raise ValueError('逐节点对照尚未定义无节点补充材料的公平分配；请分别运行完整需求策略，不遗漏或擅自分配材料')
     output = Path(output)
     if output.exists() and (not output.is_dir() or any(output.iterdir())):
         raise ValueError('比较输出目录已有内容；未知或失败调用不能在原目录自动重跑')

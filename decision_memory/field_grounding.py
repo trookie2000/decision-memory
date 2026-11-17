@@ -62,16 +62,15 @@ def _bigrams(text):
 
 
 def field_evidence_candidates(compiled, sample, limit=6):
+    from .requirement_memory import current_order
     if type(limit) is not int or not 1 <= limit <= 12:
         raise ValueError('字段建议上限须为1至12')
     catalog = reference_catalog(sample)
     indexed = [(key, ref, _bigrams(ref['quote'])) for key, ref in catalog.items()]
     frequencies = Counter(word for _, _, words in indexed for word in words)
-    events = {row['id']: row for row in compiled['events']}
     result = []
     for index, identity in enumerate(compiled['memory_index']):
-        order = next(node['order'] for node in sample.nodes
-                     if node['id'] == events[identity['event_id']]['node_id'])
+        order = current_order(compiled, sample, identity['knowledge_key'])
         for name in ('conclusion', 'reason', 'boundary'):
             field = compiled['items'][index][name]
             if field['text'] == '未说明':
@@ -83,7 +82,7 @@ def field_evidence_candidates(compiled, sample, limit=6):
             ranked = []
             for reference_id, ref, terms in indexed:
                 source = sample.catalog[ref['source_id']]
-                if sample.node_order(ref['source_id']) > order or (ref['source_id'], ref['quote']) in current:
+                if not sample.available_at(ref['source_id'], order) or (ref['source_id'], ref['quote']) in current:
                     continue
                 hits = sum(_present(symbol, ref['quote']) for symbol in missing)
                 overlap = sum(math.log1p(len(indexed) / (1 + frequencies[word])) for word in words & terms)

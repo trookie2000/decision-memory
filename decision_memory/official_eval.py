@@ -336,7 +336,8 @@ def validated_inputs(dataset, predictions, scope):
                 raise ValueError('同一需求不能混用需求级与阶段级预测，也不能重复预测')
             source_format = (whole[0].get('input_contract') or {}).get('source_format')
             manifest_protocol = whole[0].get('scope') == 'requirement' and source_format != 'directory'
-            samples = (discover_requirements if manifest_protocol else discover_directory_requirements)(dataset, requirement)
+            samples = (discover_requirements(dataset, requirement, include_supplements=bool(whole[0].get('input_contract')))
+                       if manifest_protocol else discover_directory_requirements(dataset, requirement))
             validate_saved(whole[0], samples[0])
             source_sample = samples[0]
             from .input_contract import describe_input
