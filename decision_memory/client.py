@@ -22,10 +22,11 @@ class ModelError(RuntimeError):
 
 
 class ModelOutputError(ValueError):
-    def __init__(self, message, *, response_text=None, diagnostic=None):
+    def __init__(self, message, *, response_text=None, diagnostic=None, protocol_repair_allowed=True):
         super().__init__(message)
         self.response_text = response_text
         self.diagnostic = diagnostic
+        self.protocol_repair_allowed = protocol_repair_allowed
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -194,6 +195,27 @@ def read_stream_completion(response, timeout):
 
 
 TRAILING_COMMA = re.compile(r',(\s*[}\]])')
+JSON_UNICODE_ESCAPE = re.compile(r'\\u([0-9a-fA-F]{4})')
+
+
+def contains_credential(value, sensitive_values):
+    """Check raw JSON escapes and parsed strings before persistence or repair."""
+    secrets = [secret for secret in sensitive_values if secret]
+    if not secrets:
+        return False
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, str):
+            decoded = JSON_UNICODE_ESCAPE.sub(lambda match: chr(int(match[1], 16)), current)
+            if any(secret in current or secret in decoded for secret in secrets):
+                return True
+        elif isinstance(current, dict):
+            pending.extend(current.keys())
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
+    return False
 
 
 def json_candidates(text: str):
@@ -364,7 +386,7 @@ class ModelClient:
 
                 def output_error(message, category, decode_error=None):
                     # Keep only model content, never the envelope's HTTP headers.
-                    safe_content = content if isinstance(content, str) else None
+                    safe_content = content if isinstance(content, str) and category != 'credential_echo' else None
                     if safe_content is not None:
                         for secret in sorted(set(sensitive_values), key=len, reverse=True):
                             if secret:
@@ -372,19 +394,25 @@ class ModelClient:
                         # An invalid Unicode scalar must not break local diagnostics.
                         safe_content = safe_content.encode('utf-8', errors='backslashreplace').decode('utf-8')
                     encoded = safe_content.encode('utf-8') if safe_content is not None else None
+                    finish_reason = choice.get('finish_reason')
                     diagnostic = {'schema_version': 1, 'category': category,
-                        'finish_reason': choice.get('finish_reason'),
+                        'finish_reason': finish_reason if finish_reason in (
+                            'stop', 'length', 'tool_calls', 'function_call', 'content_filter', None) else 'other',
                         'content_bytes': len(encoded) if encoded is not None else None,
                         'content_sha256': hashlib.sha256(encoded).hexdigest() if encoded is not None else None,
                         'code_fenced': bool(safe_content and safe_content.lstrip().startswith('```')),
-                        'redaction_applied': isinstance(content, str) and safe_content != content}
+                        'redaction_applied': category == 'credential_echo' or (
+                            isinstance(content, str) and safe_content != content)}
                     if isinstance(decode_error, json.JSONDecodeError):
                         diagnostic['json_error'] = {'line': decode_error.lineno, 'column': decode_error.colno,
                                                     'position': decode_error.pos}
                         diagnostic['json_error_source'] = 'original_response'
                     call['response_diagnostic'] = diagnostic
-                    return ModelOutputError(message, response_text=safe_content, diagnostic=diagnostic)
+                    return ModelOutputError(message, response_text=safe_content, diagnostic=diagnostic,
+                                            protocol_repair_allowed=category != 'credential_echo')
 
+                if contains_credential(content, sensitive_values):
+                    raise output_error('模型响应包含认证信息，已拒绝保存内容或继续修复', 'credential_echo')
                 if choice.get('finish_reason') == 'length':
                     raise output_error('输出被 max_tokens 截断，请精简条目或提高上限', 'output_truncated')
                 if choice.get('finish_reason') != 'stop' or choice['message'].get('refusal'):
@@ -406,6 +434,8 @@ class ModelClient:
                     result = parse_json(content)
                 except ModelOutputError:
                     raise output_error('模型未返回完整 JSON，请缩小输出或提高 max_tokens', 'invalid_json') from None
+            if contains_credential(result, sensitive_values):
+                raise output_error('模型响应包含认证信息，已拒绝保存内容或继续修复', 'credential_echo')
             call['status'] = 'success'
             return result
         finally:

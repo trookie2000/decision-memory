@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 from . import __version__, prompts
-from .client import ModelClient
+from .client import ModelClient, ModelOutputError
 from .sources import Sample
 from .validation import validate_evidence, validate_result
 
@@ -24,7 +24,7 @@ def checked_call(client, system, user, validator):
         try:
             return validator(client.complete(system, user))
         except ValueError as error:
-            if attempt:
+            if attempt or (isinstance(error, ModelOutputError) and not error.protocol_repair_allowed):
                 raise
             user += '\n上一次输出校验失败。重新依据原始材料输出完整 JSON。错误为 ' + str(error)[:600]
 

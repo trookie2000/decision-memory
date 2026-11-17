@@ -296,13 +296,47 @@ class AuditCliTests(unittest.TestCase):
             self.assertEqual(len(requests), 1)
             step = self.state(root)['steps'][0]
             self.assertTrue(step['response_diagnostic']['redaction_applied'])
-            raw = root / 'result.run' / step['raw_response_file']
-            self.assertIn('[REDACTED]', raw.read_text())
+            self.assertEqual(step['response_diagnostic']['category'], 'credential_echo')
+            self.assertNotIn('raw_response_file', step)
             for value in (secret, extra):
                 self.assertNotIn(value, result.stdout + result.stderr)
                 for path in (root / 'result.run').rglob('*'):
                     if path.is_file():
                         self.assertNotIn(value, path.read_text(), str(path))
+
+    def test_credential_echo_in_valid_or_unicode_escaped_json_never_reaches_storage_or_repair(self):
+        secret = 'synthetic-valid-json-auth-value'
+        escaped = ''.join('\\u%04x' % ord(char) for char in secret)
+        encoded = '{"events":[],"review_notes":["' + escaped + '"]}'
+        payloads = (completion({'events': [], 'review_notes': [secret]}), completion(encoded),
+                    completion(encoded[:-1] + ',}'))
+        for audit in (True, False):
+            for payload in payloads:
+                with self.subTest(audit=audit, content=payload), tempfile.TemporaryDirectory() as directory, model_server([
+                        (200, payload)]) as (endpoint, requests):
+                    root = Path(directory)
+                    paths = self.fixture(root, endpoint)
+                    paths[1].write_text(paths[1].read_text().replace('api_key_env=""', 'api_key_env="AUDIT_VALID_TOKEN"'))
+                    env = os.environ.copy()
+                    env['AUDIT_VALID_TOKEN'] = secret
+                    args = [sys.executable, '-m', 'decision_memory', 'requirement', 'extract',
+                            '--manifest', str(paths[0]), '--config', str(paths[1]), '--output', str(paths[2])]
+                    if audit:
+                        args += ['--evidence-audit', 'v1']
+                    result = subprocess.run(args, cwd=ROOT, env=env, capture_output=True, text=True, timeout=20)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertEqual(len(requests), 1)
+                    self.assertFalse(paths[2].exists())
+                    self.assertNotIn(secret, result.stdout + result.stderr)
+                    for path in root.rglob('*'):
+                        if path.is_file():
+                            stored = path.read_text()
+                            self.assertNotIn(secret, stored, str(path))
+                            self.assertNotIn(escaped, stored, str(path))
+                    if audit:
+                        step = self.state(root)['steps'][0]
+                        self.assertEqual(step['response_diagnostic']['category'], 'credential_echo')
+                        self.assertEqual(step['provider_execution'], 'response_received')
 
     def test_protocol_failure_records_the_error_before_bounded_repair(self):
         first, final = replies()

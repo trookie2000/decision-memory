@@ -176,6 +176,8 @@ python3 -m decision_memory requirement validate \
 
 步骤中的 `failure_phase` 区分请求前检查、HTTP 错误、传输、内容解析和结构校验。完整响应的 JSON 解析失败记为 `provider_execution=response_received`，不再标为执行未知。无效 JSON 或长度截断的内容保存在同一 run 的 `*.invalid-response.txt`，权限为 0600；文件写入前去除本次认证值，状态只保留文件名、结束原因、内容摘要和可得的 JSON 错误位置。错误位置针对原始响应，脱敏后的位置可能变化。文件仍可能含业务材料，应留在本地。
 
+模型内容含本次认证值时，程序整体拒绝响应，诊断类别为 `credential_echo`，内容不落盘，也不进入结构修复提示。检查同时覆盖原文本、JSON Unicode 转义、解析后的字段名和字符串值。这个停止条件也适用于未开启审计的提取流程。
+
 严格审计拒绝围栏、截断或非 JSON 文本，不靠扩大重试次数修复。支持 JSON Mode 的网关可在 TOML 中设置 `json_mode=true`，请求将携带 `response_format={"type":"json_object"}`。网关是否支持须先验证；程序不会因参数被拒绝而自动退回其他模式。原响应已返回但格式无效时，先查看诊断，再用明确的新配置创建独立实验。
 
 同名 run 目录或 HTML 已存在时，extract 会拒绝执行，包括去掉审计开关的命令。首版没有自动续跑；先检查原回执和实际任务状态。未知请求未经核实，不换目录盲目重发。
