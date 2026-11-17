@@ -4,7 +4,10 @@ import json
 import re
 
 from .evaluation import validate_references
-from .sources import make_sample
+from .sources import NODE_ORDER, REQUIREMENT, STAGES, make_requirement_sample, make_sample
+
+# Block names an author returns for a multi-node (requirement) sample, in node order.
+REQUIREMENT_FILES = [(stage, *STAGES[stage]) for stage in NODE_ORDER]
 
 
 def sections(markdown):
@@ -39,6 +42,13 @@ def validate_gold(references, dialogue, artifact, stage):
     return validate_references(references, make_sample(dialogue, artifact, stage))
 
 
+def requirement_sample(sample_id, nodes):
+    return make_requirement_sample(sample_id, [
+        (node['stage'], f'{sample_id}/上下文/{dialogue_name}', node['dialogue'],
+         f'{sample_id}/产物/{artifact_name}', node['artifact'])
+        for node, (_, dialogue_name, artifact_name) in zip(nodes, REQUIREMENT_FILES)])
+
+
 def parse_document(markdown, identity, completion_marker, stage, task_input_digest=None):
     # Never accept a marker mentioned in a prompt, a substring, or an earlier draft.
     # Docs escapes literal underscores/pipes outside code blocks on Markdown export.
@@ -61,6 +71,15 @@ def parse_document(markdown, identity, completion_marker, stage, task_input_dige
     if role == 'author':
         if metadata.get('status') != 'completed':
             raise ValueError('出题结果 status 必须为 completed')
+        if stage == REQUIREMENT:
+            names = [name for _, *pair in REQUIREMENT_FILES for name in pair]
+            if not all(name in blocks for name in names + ['gold.json']):
+                raise ValueError('多环节出题结果缺少 ' + '/'.join(names) + '/gold.json')
+            nodes = [{'stage': node_stage, 'dialogue': blocks[dialogue_name], 'artifact': blocks[artifact_name]}
+                     for node_stage, dialogue_name, artifact_name in REQUIREMENT_FILES]
+            references = validate_references(json.loads(blocks['gold.json']),
+                                             requirement_sample(identity['sample_id'], nodes))
+            return {'metadata': metadata, 'nodes': nodes, 'references': references}
         if not all(name in blocks for name in ('dialogue.md', 'artifact.md', 'gold.json')):
             raise ValueError('出题结果缺少 dialogue.md/artifact.md/gold.json')
         references = validate_gold(json.loads(blocks['gold.json']), blocks['dialogue.md'], blocks['artifact.md'], stage)
@@ -97,7 +116,21 @@ def worker_message(identity, completion_marker, url, stage, payload):
 完成标记只能在完整内容已成功写入后添加；接口失败时在 KIM 如实说明，不得冒充完成。
 这是 Agent 初评，绝不等于人工确认或比赛正式成绩。阶段为 {stage}。
 '''
-    if identity['role'] == 'author':
+    if identity['role'] == 'author' and stage == REQUIREMENT:
+        instructions = '''你是真实出题员工。根据给定 brief 生成一个虚构需求的**两个连续环节**：先需求分析，后技术设计。
+需求分析环节：## 需求确认记录.md（8～12 条 **用户：** / **AGENT：** 交替消息）和 ## 需求分析.md（正式需求分析文档）。
+技术设计环节：## 技术设计确认记录.md（8～12 条消息）和 ## 技术方案.md（正式技术方案）。
+技术设计环节必须承接需求分析的结论：细化其中至少一项、推翻或修正其中至少一项，并确定需求分析阶段留下的至少一个待确认事项；
+另保留至少一个两个环节都未确定的事项。每个环节都要有提议、纠偏和最终确认；产物只写最终做法。
+不要将候选参考答案或评审口吻混入对话/产物。未知理由/边界保持未说明，未决问题不得补成决定。
+result.json 增加 status: completed。必须完整输出上述四个代码块和 ## gold.json，共五个代码块。
+gold.json 为 JSON 数组，只收整个需求最终生效的知识（被技术设计推翻的需求分析结论不能收）；同一知识跨环节只写一条。
+每条包含唯一 id、text、非空 evidence；evidence 每项为
+{"node":1 或 2,"source":"dialogue 或 artifact","quote":"对应文件某一行内连续的逐字原文"}，node 1 为需求分析，node 2 为技术设计。
+通常 8～12 条，不为凑数量造结论。
+如果输入包含 previous 和 review_feedback，请根据真实评审意见修订，返回完整新版材料，不只给差异。
+'''
+    elif identity['role'] == 'author':
         instructions = '''你是真实出题员工。根据给定 brief 生成一份虚构的、单个已完成研发阶段的样本。
 请给 8～12 条自然的用户/AGENT 交替消息，使用 **用户：** 和 **AGENT：** 标记；包含提议、纠偏和最终确认。
 不要将候选参考答案或评审口吻混入对话/产物。业务事实只存在于当前阶段；未知理由/边界保持未说明，未决问题不得补成决定。

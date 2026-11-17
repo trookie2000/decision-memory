@@ -15,7 +15,7 @@ from .collaboration import BattleConfig, DocsCLI, MarioMCP, TransportError
 from .coordinator import Battle, PAUSED, file_digest, run_lock
 from .evaluation import digest
 from .pipeline import MODES
-from .sources import STAGES
+from .sources import BATTLE_STAGES
 from .storage import read_json, write_json, write_text
 
 
@@ -57,7 +57,7 @@ class Series:
         for case in cases:
             if (not isinstance(case, dict) or not isinstance(case.get('sample_id'), str)
                     or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}', case['sample_id'])
-                    or case['sample_id'] in ids or case.get('stage') not in STAGES
+                    or case['sample_id'] in ids or case.get('stage') not in BATTLE_STAGES
                     or not isinstance(case.get('brief'), str) or not 1 <= len(case['brief'].strip()) <= 20000
                     or not isinstance(case.get('clarification', ''), str)
                     or len(case.get('clarification', '')) > 20000):

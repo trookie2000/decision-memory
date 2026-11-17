@@ -7,29 +7,78 @@ from datetime import datetime, timezone
 
 from . import __version__, prompts
 from .client import ModelClient
-from .sources import Sample
-from .validation import validate_evidence, validate_result
+from .sources import REQUIREMENT, Sample
+from .validation import validate_evidence, validate_field, validate_result
 
 MODES = ('baseline', 'verified', 'artifact-only')
 PROMPT_HASH = hashlib.sha256((prompts.EXTRACT + prompts.DECISIONS + prompts.REVIEW).encode()).hexdigest()
 
 
 def run_signature(sample: Sample, client: ModelClient, mode: str) -> str:
-    values = [sample.fingerprint, client.config.public(), mode, PROMPT_HASH, __version__]
+    values = [sample.fingerprint, sample.documents(), client.config.public(), mode, PROMPT_HASH, __version__]
     return hashlib.sha256(json.dumps(values, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
-def checked_call(client, system, user, validator):
+def checked_call(client, system, user, validator, repair=None):
+    """Validate strictly; retry once with the error; then optionally repair conservatively."""
     for attempt in range(2):
+        payload = None
         try:
-            return validator(client.complete(system, user))
+            payload = client.complete(system, user)
+            return validator(payload)
         except ValueError as error:
-            if attempt:
+            if attempt and (repair is None or payload is None):
                 raise
+            if attempt:
+                return repair(payload, error)
             user += '\n上一次输出校验失败。重新依据原始材料输出完整 JSON。错误为 ' + str(error)[:600]
 
 
+def repair_decisions(payload, sample):
+    """Keep only trace entries whose citations match; the trace is an aid, never output as knowledge."""
+    from .validation import evidence_ok
+
+    def references(value):
+        return [reference for reference in value
+                if isinstance(reference, dict) and evidence_ok(reference, sample)] if isinstance(value, list) else []
+
+    kept = []
+    rows = payload.get('decisions') if isinstance(payload, dict) else None
+    for decision in rows if isinstance(rows, list) else []:
+        if not isinstance(decision, dict):
+            continue
+        evidence = references(decision.get('evidence'))
+        if evidence:
+            fixed = {**decision, 'evidence': evidence}
+            if 'resolution_evidence' in fixed:
+                fixed['resolution_evidence'] = references(fixed['resolution_evidence'])
+            if 'reason' in fixed:
+                try:
+                    fixed['reason'] = validate_field(fixed['reason'], sample, 'decisions.reason', False)
+                except ValueError:
+                    fixed['reason'] = {'text': '未说明', 'evidence': []}
+            kept.append(fixed)
+    if not kept:
+        raise ValueError('决策轨迹中没有可核对原文的记录')
+    return validate_decisions({'decisions': kept}, sample)
+
+
+def repaired(validator, sample, notes):
+    """Build a repair hook that strips unsupported citations, records what changed, then re-validates."""
+    from .validation import repair_result
+
+    def hook(payload, error):
+        fixed, changes = repair_result(payload, sample)
+        if not fixed['items']:
+            raise error  # nothing verifiable survives: fail loudly instead of returning an empty result
+        notes.extend(['二次校验仍失败（' + str(error)[:120] + '），已保守修复：'] + changes)
+        return validator(fixed)
+    return hook
+
+
 def validate_decisions(payload, sample):
+    if not isinstance(payload, dict):
+        raise ValueError('决策轨迹必须是 JSON 对象')
     decisions = payload.get('decisions')
     if not isinstance(decisions, list):
         raise ValueError('决策轨迹必须包含 decisions 数组')
@@ -42,7 +91,16 @@ def validate_decisions(payload, sample):
         evidence = validate_evidence(decision.get('evidence'), sample, 'decisions')
         if not evidence:
             raise ValueError('决策轨迹缺少证据')
-        normalized.append({**decision, 'evidence': evidence})
+        extra = {}
+        if 'scope' in decision:
+            if not isinstance(decision['scope'], str) or not decision['scope'].strip():
+                raise ValueError('决策轨迹 scope 必须是非空字符串')
+            extra['scope'] = decision['scope'].strip()
+        if 'resolution_evidence' in decision:
+            extra['resolution_evidence'] = validate_evidence(decision['resolution_evidence'], sample, 'decisions.resolution')
+        if 'reason' in decision:
+            extra['reason'] = validate_field(decision['reason'], sample, 'decisions.reason', False)
+        normalized.append({**decision, 'evidence': evidence, **extra})
     return normalized
 
 
@@ -57,13 +115,17 @@ def validate_review(payload, sample):
 def drop_superseded(result, decisions, context):
     """Deterministically drop items whose conclusion rests only on superseded proposals.
 
-    A line counts as superseded-only when a superseded decision cites it and no active
-    decision cites it. Artifact lines are final by definition and never superseded-only.
+    Requirements use evidenced, scope-aware transitions, including earlier artifacts.
+    The legacy single-stage path retains its line-based proposal filter.
     """
+    if context.stage == REQUIREMENT:
+        from .memory import reconcile
+        return reconcile(result, decisions, context)
     superseded, active = set(), set()
     for decision in decisions:
-        target = superseded if decision['status'] == 'superseded' else active
-        target.update(evidence['source_id'] for evidence in decision['evidence'])
+        if decision['status'] in ('superseded', 'active'):
+            target = superseded if decision['status'] == 'superseded' else active
+            target.update(evidence['source_id'] for evidence in decision['evidence'])
     stale = {key for key in superseded - active if not key.startswith('A')}
     kept, dropped = [], []
     for item in result['items']:
@@ -87,20 +149,44 @@ def extract(sample: Sample, client: ModelClient, mode: str = 'verified') -> dict
     sources = context.prompt_text()
     decisions = []
     extraction_input = sources
+    repairs = []
     if mode == 'verified':
-        decisions = checked_call(client, prompts.DECISIONS, sources, lambda payload: validate_decisions(payload, context))
+        def trace_repair(payload, error):
+            fixed = repair_decisions(payload, context)
+            repairs.append('决策轨迹二次校验仍失败（' + str(error)[:120] + '），已保守修复引用；未补写内容')
+            return fixed
+        decisions = checked_call(client, prompts.DECISIONS, sources, lambda payload: validate_decisions(payload, context),
+                                 trace_repair)
         extraction_input += '\n待核对的决策轨迹 ' + json.dumps(decisions, ensure_ascii=False)
-    result = checked_call(client, prompts.EXTRACT, extraction_input, lambda payload: validate_result(payload, context))
+    extract_validator = lambda payload: validate_result(payload, context)
+    result = checked_call(client, prompts.EXTRACT, extraction_input, extract_validator,
+                          repaired(extract_validator, context, repairs))
     if mode == 'verified':
         review_input = sources + '\n候选结果 ' + json.dumps(result, ensure_ascii=False)
         review_input += '\n决策轨迹 ' + json.dumps(decisions, ensure_ascii=False)
-        result = checked_call(client, prompts.REVIEW, review_input, lambda payload: validate_review(payload, context))
+        review_validator = lambda payload: validate_review(payload, context)
+
+        def review_repair(payload, error):
+            from .validation import repair_result
+            fixed, changes = repair_result(payload, context)
+            if not fixed['items']:
+                raise error
+            repairs.extend(['复核结果二次校验仍失败（' + str(error)[:120] + '），已保守修复：'] + changes)
+            notes = payload.get('review_notes') if isinstance(payload, dict) else None
+            fixed['review_notes'] = [note for note in notes if isinstance(note, str)] if isinstance(notes, list) else []
+            return review_validator(fixed)
+        result = checked_call(client, prompts.REVIEW, review_input, review_validator, review_repair)
         result, dropped = drop_superseded(result, decisions, context)
         result['review_notes'] = result.get('review_notes', []) + dropped
+    if repairs:
+        result['review_notes'] = result.get('review_notes', []) + repairs
     return {**result, 'decisions': decisions, 'sample_id': sample.sample_id, 'stage': sample.stage,
             'mode': mode, 'input_fingerprint': sample.fingerprint, 'input_file_hashes': sample.file_hashes,
+            'input_documents': sample.documents(),
             'run_signature': run_signature(sample, client, mode),
             'created_at': datetime.now(timezone.utc).isoformat(), 'version': __version__, 'prompt_hash': PROMPT_HASH,
             'model': client.config.model, 'metrics': client.metrics(), 'calls': client.calls,
             'checks': {'exact_citations': 'passed', 'model_review': mode == 'verified',
-                       'human_review': 'pending', 'empty_result': not bool(result['items'])}}
+                       'human_review': 'pending', 'empty_result': not bool(result['items']),
+                       'citation_repairs': bool(repairs),
+                       'requires_review': bool(result.get('review_queue'))}}

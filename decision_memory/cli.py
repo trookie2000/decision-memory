@@ -11,20 +11,24 @@ from .client import Config, ModelClient, ModelError
 from .collaboration import BattleConfig, DocsCLI, MarioMCP, TransportError
 from .evaluation import make_worksheet, score_worksheet, validate_references
 from .pipeline import MODES, extract
-from .sources import STAGES, discover_samples, load_sample
+from .sources import BATTLE_STAGES, STAGES, discover_requirements, discover_samples, load_sample
 from .storage import read_json, render_markdown, save_result, validate_saved, write_json, write_text
 
 
 def parser():
     root = argparse.ArgumentParser(prog='decision-memory', description='研发阶段决策提取与证据核查')
     commands = root.add_subparsers(dest='command', required=True)
-    inspect = commands.add_parser('inspect', help='离线检查官方 ZIP 或目录的阶段输入')
+    inspect = commands.add_parser('inspect', help='离线检查 ZIP 或目录的需求输入')
     inspect.add_argument('--dataset', required=True, type=Path)
     inspect.add_argument('--output', type=Path)
-    single = commands.add_parser('extract', help='提取一个阶段的决策与约束')
+    inspect.add_argument('--unit', choices=('stage', 'requirement'), default='requirement',
+                        help='stage：每个阶段单独提取；requirement：整个需求按节点顺序合并为一份输入')
+    single = commands.add_parser('extract', help='提取一个需求或独立阶段的决策与约束')
     add_sample_arguments(single, required=False)
-    single.add_argument('--dataset', type=Path, help='从官方数据集选一个阶段；不读取评测标注')
-    single.add_argument('--sample-id', help='--dataset 中的完整阶段编号')
+    single.add_argument('--dataset', type=Path, help='从数据集选择需求；不读取评测标注')
+    single.add_argument('--sample-id', help='--dataset 中的阶段编号；--unit requirement 时为需求目录名')
+    single.add_argument('--unit', choices=('stage', 'requirement'), default='requirement',
+                        help='stage：每个阶段单独提取；requirement：整个需求按节点顺序合并为一份输入')
     add_model_arguments(single)
     single.add_argument('--output', required=True, type=Path)
     batch = commands.add_parser('batch', help='对官方格式样本批量提取')
@@ -32,10 +36,14 @@ def parser():
     add_model_arguments(batch)
     batch.add_argument('--output', required=True, type=Path)
     batch.add_argument('--resume', action='store_true')
+    batch.add_argument('--unit', choices=('stage', 'requirement'), default='requirement',
+                        help='stage：每个阶段单独提取；requirement：整个需求按节点顺序合并为一份输入')
     check = commands.add_parser('validate', help='离线核对已保存结果及其原文位置')
     add_sample_arguments(check, required=False)
     check.add_argument('--dataset', type=Path)
     check.add_argument('--result', required=True, type=Path)
+    check.add_argument('--unit', choices=('stage', 'requirement'), default='requirement',
+                        help='stage：每个阶段单独提取；requirement：整个需求按节点顺序合并为一份输入')
     review = commands.add_parser('review', help='生成人工评测表或计算已填写的评测结果')
     review_commands = review.add_subparsers(dest='review_command', required=True)
     initialize = review_commands.add_parser('init')
@@ -147,7 +155,8 @@ def add_battle_arguments(commands):
     start.add_argument('--config', required=True, type=Path)
     start.add_argument('--output', required=True, type=Path)
     start.add_argument('--sample-id', required=True)
-    start.add_argument('--stage', required=True, choices=STAGES)
+    start.add_argument('--stage', required=True, choices=BATTLE_STAGES,
+                       help='requirement：一道题包含需求分析 + 技术设计两个环节')
     start.add_argument('--brief-file', required=True, type=Path)
     start.add_argument('--clarification-file', type=Path, help='在首次审题时才加入的合成测试条件')
     start.add_argument('--model-config', type=Path)
@@ -222,11 +231,16 @@ def add_model_arguments(command):
     command.add_argument('--mode', choices=MODES, default='verified')
 
 
-def inspect_dataset(path):
-    samples = discover_samples(path)
+def discover(path, unit='requirement', sample_id=None):
+    return (discover_requirements if unit == 'requirement' else discover_samples)(path, sample_id=sample_id)
+
+
+def inspect_dataset(path, unit='requirement'):
+    samples = discover(path, unit)
     return {'samples': [{'sample_id': sample.sample_id, 'stage': sample.stage,
                          'fingerprint': sample.fingerprint,
                          'file_hashes': sample.file_hashes,
+                         'documents': sample.documents(),
                          'dialogue_lines': sum(key.startswith('D') for key in sample.catalog),
                          'artifact_lines': sum(key.startswith('A') for key in sample.catalog),
                          'files': sorted({source.file for source in sample.catalog.values()})}
@@ -234,7 +248,7 @@ def inspect_dataset(path):
 
 
 def batch_extract(args):
-    samples = discover_samples(args.dataset)
+    samples = discover(args.dataset, args.unit)
     config = Config.load(args.config)
     if args.output.exists() and any(args.output.iterdir()) and not args.resume:
         raise ValueError('输出目录已有内容，请使用新目录或 --resume')
@@ -267,7 +281,7 @@ def batch_extract(args):
             except (ValueError, OSError, ModelError) as error:
                 records.append({'sample_id': sample.sample_id, 'status': 'failed', 'error': str(error), 'metrics': client.metrics()})
             print(f'{sample.sample_id} {records[-1]["status"]}', file=sys.stderr)
-            summary = {'mode': args.mode, 'total': len(samples), 'processed': len(records),
+            summary = {'mode': args.mode, 'unit': args.unit, 'total': len(samples), 'processed': len(records),
                        'succeeded': sum(row['status'] != 'failed' for row in records),
                        'failed': sum(row['status'] == 'failed' for row in records),
                        'reused': sum(row['status'] == 'reused' for row in records), 'records': records}
@@ -285,7 +299,7 @@ def run(args):
     if args.command == 'battle':
         return run_battle(args)
     if args.command == 'inspect':
-        value = inspect_dataset(args.dataset)
+        value = inspect_dataset(args.dataset, args.unit)
         if args.output:
             write_json(args.output, value)
         return value, 0
@@ -295,9 +309,9 @@ def run(args):
         if args.dataset:
             if not args.sample_id or any((args.dialogue, args.artifact, args.stage)):
                 raise ValueError('--dataset 需要 --sample-id，且不能同时传独立文件参数')
-            matches = discover_samples(args.dataset, sample_id=args.sample_id)
+            matches = discover(args.dataset, args.unit, args.sample_id)
             if len(matches) != 1:
-                raise ValueError('数据集中没有对应的唯一阶段 sample-id')
+                raise ValueError('数据集中没有对应的唯一 sample-id')
             sample = matches[0]
         else:
             if args.sample_id or not all((args.dialogue, args.artifact, args.stage)):
@@ -313,9 +327,11 @@ def run(args):
     if args.command == 'validate':
         result = read_json(args.result)
         if args.dataset:
-            matches = [sample for sample in discover_samples(args.dataset) if sample.sample_id == result.get('sample_id')]
+            unit = ('requirement' if result.get('stage') == 'requirement' else
+                    'stage' if result.get('stage') in STAGES else args.unit)
+            matches = [sample for sample in discover(args.dataset, unit) if sample.sample_id == result.get('sample_id')]
             if len(matches) != 1:
-                raise ValueError('样本包内未找到结果对应的唯一阶段')
+                raise ValueError('样本包内未找到结果对应的唯一样本')
             sample = matches[0]
         else:
             if not all((args.dialogue, args.artifact, args.stage)):

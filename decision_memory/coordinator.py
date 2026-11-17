@@ -17,7 +17,7 @@ from .battle_protocol import marker, parse_document, sections, worker_message
 from .client import Config, ModelClient
 from .collaboration import BattleConfig, DocsCLI, MarioMCP, TransportError, receipt_details
 from .evaluation import apply_judgments, digest, make_worksheet, score_worksheet, validate_references
-from .sources import STAGES, load_sample, read_text
+from .sources import BATTLE_STAGES, REQUIREMENT, STAGES, discover_requirements, load_sample, read_text
 from .storage import read_json, render_markdown, validate_saved, write_json, write_text
 from .task_delivery import DocumentDelivery, message_size_rejection, verify_task
 
@@ -62,7 +62,7 @@ class Battle:
     @classmethod
     def create(cls, root, config, sample_id, stage, brief, *, clarification='', model_config=None,
                mode='baseline', **dependencies):
-        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}', sample_id) or stage not in STAGES:
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}', sample_id) or stage not in BATTLE_STAGES:
             raise ValueError('sample-id 或 stage 无效')
         if mode not in ('baseline', 'verified', 'artifact-only'):
             raise ValueError('提取模式无效')
@@ -91,6 +91,22 @@ class Battle:
 
     def input_path(self, filename):
         return self.path(f'inputs/{self.state["sample_id"]}/{filename}')
+
+    def is_requirement(self):
+        return self.state['stage'] == REQUIREMENT
+
+    def input_sample(self):
+        """The frozen CLI input. Multi-node samples are stored in the official folder layout."""
+        if self.is_requirement():
+            return discover_requirements(self.path('inputs'), sample_id=self.state['sample_id'])[0]
+        return load_sample(self.input_path('dialogue.md'), self.input_path('artifact.md'), self.state['stage'])
+
+    def input_nodes(self):
+        """Frozen materials for the scorer, node by node (requirement samples only)."""
+        from .battle_protocol import REQUIREMENT_FILES
+        return [{'stage': stage, 'dialogue': read_text(self.input_path(f'上下文/{dialogue_name}')),
+                 'artifact': read_text(self.input_path(f'产物/{artifact_name}'))}
+                for stage, dialogue_name, artifact_name in REQUIREMENT_FILES]
 
     def save(self):
         self.state['state_digest'] = digest({key: value for key, value in self.state.items() if key != 'state_digest'})
@@ -222,7 +238,7 @@ class Battle:
         frozen = None
         if self.state['frozen']:
             frozen = read_json(self.path('frozen.json'))
-            sample = load_sample(self.input_path('dialogue.md'), self.input_path('artifact.md'), self.state['stage'])
+            sample = self.input_sample()
             references = read_json(self.path('scoring/references.json'))
             validate_references(references, sample)
             if (sample.fingerprint != frozen['input_fingerprint'] or sample.file_hashes != frozen['file_hashes']
@@ -290,13 +306,15 @@ class Battle:
             return value
         if role == 'reviewer':
             author = self.author_result()
-            return {'dialogue': author['dialogue'], 'artifact': author['artifact'],
-                    'references': author['references'], 'brief': self.state['brief'],
+            materials = ({'nodes': author['nodes']} if self.is_requirement()
+                         else {'dialogue': author['dialogue'], 'artifact': author['artifact']})
+            return {**materials, 'references': author['references'], 'brief': self.state['brief'],
                     'review_clarification': self.state['clarification']}
         prediction = read_json(self.path(self.state['prediction']))
-        return {'dialogue': read_text(self.input_path('dialogue.md')),
-                'artifact': read_text(self.input_path('artifact.md')),
-                'references': read_json(self.path('scoring/references.json')), 'prediction': prediction}
+        materials = ({'nodes': self.input_nodes()} if self.is_requirement()
+                     else {'dialogue': read_text(self.input_path('dialogue.md')),
+                           'artifact': read_text(self.input_path('artifact.md'))})
+        return {**materials, 'references': read_json(self.path('scoring/references.json')), 'prediction': prediction}
 
     def operation(self, role):
         key = f'r{self.state["round"]:02d}-{role}' if role != 'scorer' else f'score-a{len(self.state["extractions"]):02d}'
@@ -553,10 +571,16 @@ class Battle:
     def freeze(self):
         author = self.author_result()
         input_dir = f'inputs/{self.state["sample_id"]}'
-        self.put_text(input_dir + '/dialogue.md', author['dialogue'])
-        self.put_text(input_dir + '/artifact.md', author['artifact'])
+        if self.is_requirement():
+            from .battle_protocol import REQUIREMENT_FILES
+            for node, (_, dialogue_name, artifact_name) in zip(author['nodes'], REQUIREMENT_FILES):
+                self.put_text(f'{input_dir}/上下文/{dialogue_name}', node['dialogue'])
+                self.put_text(f'{input_dir}/产物/{artifact_name}', node['artifact'])
+        else:
+            self.put_text(input_dir + '/dialogue.md', author['dialogue'])
+            self.put_text(input_dir + '/artifact.md', author['artifact'])
         self.put_json('scoring/references.json', author['references'])
-        sample = load_sample(self.input_path('dialogue.md'), self.input_path('artifact.md'), self.state['stage'])
+        sample = self.input_sample()
         self.put_json('frozen.json', {'task_id': self.state['task_id'], 'sample_id': self.state['sample_id'],
                                     'stage': self.state['stage'], 'round': self.state['round'],
                                     'input_fingerprint': sample.fingerprint, 'file_hashes': sample.file_hashes,
@@ -567,10 +591,15 @@ class Battle:
 
     @staticmethod
     def _extract_process(dialogue, artifact, stage, config, mode, output):
+        """Run the CLI as a separate process. For requirement samples `dialogue` is the frozen
+        inputs directory and `artifact` the sample id (the same path the official evaluation uses)."""
         model = Config.load(config)
         timeout = min(3600, model.timeout * (model.retries + 1) * (6 if mode == 'verified' else 2) + 120)
-        args = [sys.executable, '-m', 'decision_memory', 'extract', '--dialogue', str(dialogue),
-                '--artifact', str(artifact), '--stage', stage, '--config', str(config),
+        if stage == REQUIREMENT:
+            source = ['--dataset', str(dialogue), '--unit', 'requirement', '--sample-id', str(artifact)]
+        else:
+            source = ['--dialogue', str(dialogue), '--artifact', str(artifact), '--stage', stage]
+        args = [sys.executable, '-m', 'decision_memory', 'extract', *source, '--config', str(config),
                 '--mode', mode, '--output', str(output)]
         result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
         return {'command': args, 'exit_code': result.returncode, 'stdout': result.stdout, 'stderr': result.stderr}
@@ -589,7 +618,7 @@ class Battle:
         prediction_path = self.path(relative + '/prediction.json')
         if prediction_path.exists():
             prediction = read_json(prediction_path)
-            sample = load_sample(self.input_path('dialogue.md'), self.input_path('artifact.md'), self.state['stage'])
+            sample = self.input_sample()
             if attempt.get('config_digest') != file_digest(self.state['model_config']):
                 raise ValueError('预测产生后模型配置已改变，不能将其作为当前配置的结果复用')
             validate_saved(prediction, sample, ModelClient(Config.load(Path(self.state['model_config']))), self.state['mode'])
@@ -614,8 +643,10 @@ class Battle:
         self.save()
         self.event('independent_cli_extraction_started', attempt=attempt['number'], mode=self.state['mode'])
         try:
-            receipt = self.extractor(self.input_path('dialogue.md'), self.input_path('artifact.md'),
-                                     self.state['stage'], Path(self.state['model_config']), self.state['mode'], prediction_path)
+            inputs = ((self.path('inputs'), self.state['sample_id']) if self.is_requirement()
+                      else (self.input_path('dialogue.md'), self.input_path('artifact.md')))
+            receipt = self.extractor(*inputs, self.state['stage'], Path(self.state['model_config']),
+                                     self.state['mode'], prediction_path)
             self.put_json(relative + '/cli-receipt.json', receipt)
             if receipt['exit_code'] != 0 or not prediction_path.exists():
                 raise TransportError(f'decision-memory extract exit={receipt["exit_code"]}：{receipt["stderr"].strip()}')

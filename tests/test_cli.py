@@ -60,7 +60,7 @@ class CliTests(unittest.TestCase):
                          'request_id': 'fixture-batch-request'}
         with model_server([(401, gateway_error), (200, completion(valid_payload())), (200, completion(valid_payload()))]) as (endpoint, requests):
             self.configure(endpoint)
-            args = ['batch', '--dataset', dataset, '--config', self.config, '--mode', 'baseline', '--output', output]
+            args = ['batch', '--unit', 'stage', '--dataset', dataset, '--config', self.config, '--mode', 'baseline', '--output', output]
             first = self.run_cli(*args)
             self.assertNotEqual(first.returncode, 0)
             summary = json.loads((output / 'summary.json').read_text())
@@ -89,7 +89,7 @@ class CliTests(unittest.TestCase):
             archive.writestr('REQ-1/产物/需求分析.md', self.artifact.read_text())
         with model_server([(200, completion(valid_payload()))]) as (endpoint, requests):
             self.configure(endpoint)
-            args = ['batch', '--dataset', dataset, '--config', self.config, '--mode', 'baseline', '--output', self.directory / 'runs']
+            args = ['batch', '--unit', 'stage', '--dataset', dataset, '--config', self.config, '--mode', 'baseline', '--output', self.directory / 'runs']
             self.assertEqual(self.run_cli(*args).returncode, 0)
             self.config.write_text(self.config.read_text().replace('fixture', 'different-model'))
             resumed = self.run_cli(*args, '--resume')
@@ -119,10 +119,12 @@ class CliTests(unittest.TestCase):
             archive.writestr('评测标注/答案.md', 'ANNOTATION_SECRET')
         with model_server([(200, completion(valid_payload()))]) as (endpoint, requests):
             self.configure(endpoint)
-            extracted = self.run_cli('extract', '--dataset', dataset, '--sample-id', 'REQ-1-analysis',
+            extracted = self.run_cli('extract', '--unit', 'stage', '--dataset', dataset, '--sample-id', 'REQ-1-analysis',
                                      '--config', self.config, '--mode', 'baseline', '--output', self.directory / 'official.json')
         self.assertEqual(extracted.returncode, 0, extracted.stderr)
         self.assertNotIn('SECRET', json.dumps(requests))
+        validated = self.run_cli('validate', '--dataset', dataset, '--result', self.directory / 'official.json')
+        self.assertEqual(validated.returncode, 0, validated.stderr)
         references = self.directory / 'references.json'
         references.write_text(json.dumps([{'id': 'R1', 'text': '120 元',
                                'evidence': [{'source': 'dialogue', 'quote': '120 元'}]}]))
@@ -130,6 +132,39 @@ class CliTests(unittest.TestCase):
                                '--references', references)
         self.assertEqual(checked.returncode, 0, checked.stderr)
         self.assertEqual(json.loads(checked.stdout)['semantic_quality'], 'requires_human_review')
+
+    def test_default_batch_groups_nodes_and_reads_extra_files_without_answers(self):
+        dataset = self.directory / 'requirements.zip'
+        with zipfile.ZipFile(dataset, 'w') as archive:
+            archive.writestr('REQ-1/上下文/需求确认记录.md', '**用户：**\n门槛先用100元')
+            archive.writestr('REQ-1/产物/需求分析.md', '门槛100元')
+            archive.writestr('REQ-1/上下文/技术设计确认记录.md', '**用户：**\n门槛改成 120 元')
+            archive.writestr('REQ-1/产物/技术方案.md', '本次活动门槛为 120 元')
+            archive.writestr('REQ-1/产物/口径说明.md', 'EXTRA_INPUT_DEFINITION')
+            archive.writestr('评测标注/答案.md', 'ANSWER_MUST_NOT_LEAK')
+        inspected = self.run_cli('inspect', '--dataset', dataset)
+        self.assertEqual(inspected.returncode, 0, inspected.stderr)
+        inventory = json.loads(inspected.stdout)
+        self.assertEqual(inventory['count'], 1)
+        self.assertEqual(inventory['samples'][0]['stage'], 'requirement')
+        extra = inventory['samples'][0]['documents'][-1]
+        self.assertEqual(extra['document_type'], 'supplement')
+        self.assertIsNone(extra['node'])
+        payload = valid_payload()
+        payload['items'][0]['conclusion']['evidence'][0]['source_id'] = 'D2-00002'
+        payload['items'][0]['boundary']['evidence'][0]['source_id'] = 'A2-00001'
+        output = self.directory / 'requirements-run'
+        with model_server([(200, completion(payload))]) as (endpoint, requests):
+            self.configure(endpoint)
+            batch = self.run_cli('batch', '--dataset', dataset, '--config', self.config,
+                                 '--mode', 'baseline', '--output', output)
+        self.assertEqual(batch.returncode, 0, batch.stderr)
+        self.assertEqual(json.loads(batch.stdout)['unit'], 'requirement')
+        self.assertTrue((output / 'REQ-1.json').is_file())
+        self.assertIn('EXTRA_INPUT_DEFINITION', json.dumps(requests))
+        self.assertNotIn('ANSWER_MUST_NOT_LEAK', json.dumps(requests))
+        validated = self.run_cli('validate', '--dataset', dataset, '--result', output / 'REQ-1.json')
+        self.assertEqual(validated.returncode, 0, validated.stderr)
 
     def test_battle_help_is_available_without_network(self):
         help_result = self.run_cli('battle', '--help')
@@ -194,7 +229,7 @@ class CliTests(unittest.TestCase):
         output = self.directory / 'runs'
         with model_server([(200, 'interrupted-body'), (200, completion(valid_payload()))]) as (endpoint, requests):
             self.configure(endpoint)
-            result = self.run_cli('batch', '--dataset', dataset, '--config', self.config, '--mode', 'baseline', '--output', output)
+            result = self.run_cli('batch', '--unit', 'stage', '--dataset', dataset, '--config', self.config, '--mode', 'baseline', '--output', output)
         self.assertEqual(result.returncode, 2, result.stderr)
         summary = json.loads((output / 'summary.json').read_text())
         self.assertEqual((summary['failed'], summary['succeeded']), (1, 1))
@@ -208,7 +243,7 @@ class CliTests(unittest.TestCase):
         output = self.directory / 'runs'
         with model_server([(200, completion(valid_payload()))]) as (endpoint, requests):
             self.configure(endpoint)
-            args = ['batch', '--dataset', dataset, '--config', self.config, '--mode', 'baseline', '--output', output]
+            args = ['batch', '--unit', 'stage', '--dataset', dataset, '--config', self.config, '--mode', 'baseline', '--output', output]
             self.assertEqual(self.run_cli(*args).returncode, 0)
             (output / 'REQ-1-analysis.md').write_text('被改写的交接内容')
             result = self.run_cli(*args, '--resume')

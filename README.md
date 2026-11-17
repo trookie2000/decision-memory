@@ -1,10 +1,12 @@
 # Decision Memory
 
-面向命题 07 的本地 CLI。读取一个研发阶段的完整对话和最终产物，输出最终有效决策、理由、适用边界及逐字段原文证据。
+面向命题 07 的本地 CLI。默认读取整个需求的多阶段对话、产物与补充 Markdown 材料，输出现行决策、理由、适用边界及逐字段原文证据。
 
 Python 3.11+。运行时仅使用标准库。默认输出 JSON 和 Markdown，可供下一阶段 Agent 读取。
 
 ## 当前验证范围
+
+2026-11-17，工程版本 0.4.0 增加材料类型与阶段顺序分离、跨节点失效检查、可重放决策历史和程序核查队列。数据集入口默认按需求合并，旧单阶段用法需显式传 `--unit stage`。实现范围、验证和尚未完成的优化见 [输入与状态改造记录](docs/input-state-upgrade.md)。本轮尚未运行真实模型或新增独立评分，历史分数不能视为新版本成绩。
 
 2026-11-13，原 S004～S009 批次已完成 6/6。两位真实 Mario 员工完成出题、审题和评分，CLI 独立调用 Kimi 提取。S006、S008 经两轮修订。共保存 28 条决策和 8 条未决项；28 条决策均获员工肯定初评，人工确认仍待完成。逐例记录见本机 `runs/continuous-six-20261112/evaluation-summary.md`。
 
@@ -38,7 +40,7 @@ uv pip install --python .venv/bin/python -e .
 .venv/bin/decision-memory --help
 ```
 
-本机已将题面附件保存到 `data/public-samples.zip`，该目录被 Git 忽略。其他机器可从命题文档下载同名自测 ZIP，或传入解压后的目录。程序识别每个需求下 `上下文/需求确认记录.md` 与 `产物/需求分析.md`，以及 `上下文/技术设计确认记录.md` 与 `产物/技术方案.md`。每对文件形成一条输入。题面附件请从内部材料获取。
+本机已将题面附件保存到 `data/public-samples.zip`，该目录被 Git 忽略。其他机器可从命题文档下载自测 ZIP，或传入解压目录。默认每个需求形成一条输入；读取其 `上下文/` 与 `产物/` 下所有 Markdown 文件，并跳过评测标注目录。已知的需求分析和技术设计文件建立阶段顺序，额外文件标为补充材料且 `node=null`，包括放在产物目录的额外文件。未知文件不根据名称或编号推断时间。单阶段模式仅读取对应的已知文件对。
 
 ## 配置模型网关
 
@@ -76,6 +78,7 @@ HTTP 错误会显示网关返回的错误码、说明和请求 ID，并屏蔽配
 
 ```bash
 .venv/bin/decision-memory extract --dataset data/public-samples.zip \
+  --unit stage \
   --sample-id REQ-20261012-auction-heat-analysis \
   --config config.local.toml --mode baseline --output runs/official-one/result.json
 ```
@@ -92,7 +95,7 @@ python3 -m decision_memory extract \
   --output runs/example/result.json
 ```
 
-批量处理官方格式样本。
+批量处理官方格式样本，每个需求输出一份结果。旧阶段批次使用 `--unit stage`，已保存结果的 `validate` 会按结果中的阶段类型自动选择输入。
 
 ```bash
 python3 -m decision_memory batch --dataset data/public-samples.zip \
@@ -105,9 +108,9 @@ python3 -m decision_memory batch --dataset data/public-samples.zip \
 
 | 模式 | 输入及处理 | 常规模型调用数 |
 |---|---|---:|
-| baseline | 当前阶段对话与最终产物，一次生成条目 | 1 |
+| baseline | 需求全部材料，一次生成条目 | 1 |
 | verified | 识别决策变化、生成条目、全文复核 | 3 |
-| artifact-only | 只向模型提供最终产物 | 1 |
+| artifact-only | 只提供产物目录材料，额外文件仍标为 supplement | 1 |
 
 每个步骤的格式或引用错误最多修复一次。每次 HTTP 请求默认最多重试两次，最多三个尝试。认证错误立即失败。默认每次请求超时 180 秒，输入上限 120,000 字符，输出上限 12,000 tokens。长材料超过上限时返回明确错误，可调整配置或按完整阶段拆分。
 
@@ -116,6 +119,8 @@ python3 -m decision_memory batch --dataset data/public-samples.zip \
 每条结果包含 `conclusion`、`reason`、`boundary` 三个字段，每个字段有 `text` 和 `evidence`。证据包含原文编号、逐字引文、源文件、行号和对话消息编号。理由或边界无依据时为“未说明”。`open_questions` 单独记录未决事项。
 
 verified 模式还输出 `decisions`，保留 `active`、`superseded`、`pending`、`conflict` 状态。`review_notes` 记录模型复核意见。`checks` 区分逐字引用校验、模型复核和人工评审。引用存在性校验与语义支持度需要分别核对。
+
+需求级 verified 结果还包含 `input_documents`、`decision_history` 和 `review_queue`。后续明确决定可以替换早期产物；代码仅在同议题、同适用范围且有后续用户/阶段产物依据时执行失效处理，保留原记录与替换依据。材料冲突或未经证实的替换进入程序核查队列，`checks.requires_review=true`；原文明示且尚未解决的业务待定事项才属于 `open_questions`。语义议题归并仍由模型完成，尚未实现独立字段验证器或完整记忆库。
 
 单样本成功后原子写入 JSON，并生成 Markdown。批量运行在 `summary.json` 逐条记录成功、失败和复用情况，单条失败后继续处理其余样本，任一失败时退出码为 2。每个样本的 `metrics` 保留调用数、HTTP 尝试数、耗时和 token 用量。网关未返回用量时保留 `null`。
 

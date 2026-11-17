@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from decision_memory import official_eval
 from decision_memory.client import ModelOutputError, parse_json
@@ -246,3 +247,158 @@ class ReferenceQuoteTests(unittest.TestCase):
         sample = make_sample('**用户：** 好的。但失败时别报错。\n', '- 失败不报错。\n', 'design')
         refs = [{'id': 'R1', 'text': 'x', 'evidence': [{'source': 'dialogue', 'quote': '用户：但失败时别报错。'}]}]
         self.assertEqual(validate_references(refs, sample), refs)
+
+
+class RequirementUnitTests(unittest.TestCase):
+    NODES = [('analysis', 'r/上下文/需求确认记录.md', '**用户：**\n归排序方负责。\n', 'r/产物/需求分析.md', '- 排序归排序方。\n'),
+             ('design', 'r/上下文/技术设计确认记录.md', '**AGENT：**\n先过滤低价品？\n\n**用户：**\n不能删。\n',
+              'r/产物/技术方案.md', '- 低价品保留在候选中。\n')]
+
+    def sample(self):
+        from decision_memory.sources import make_requirement_sample
+        return make_requirement_sample('REQ-x', self.NODES)
+
+    def test_ids_are_unique_per_node_and_keep_dialogue_artifact_prefix(self):
+        sample = self.sample()
+        self.assertEqual(sample.stage, 'requirement')
+        self.assertEqual(sorted({key[:3] for key in sample.catalog}), ['A1-', 'A2-', 'D1-', 'D2-'])
+        source = sample.catalog['D2-00005']
+        self.assertEqual((source.node, source.role, source.text), (2, 'user', '不能删。'))
+        self.assertEqual(sample.node_stages, {1: '需求分析', 2: '技术设计'})
+
+    def test_prompt_lists_nodes_in_order_and_tags_each_line(self):
+        prompt = json.loads(self.sample().prompt_text())
+        self.assertEqual([node['stage'] for node in prompt['nodes']], ['需求分析', '技术设计'])
+        self.assertTrue(all('node' in line for line in prompt['sources']))
+
+    def test_citations_validate_across_nodes(self):
+        sample = self.sample()
+        result = validate_result({'items': [{'kind': 'change',
+            'conclusion': {'text': '低价品保留', 'evidence': [{'source_id': 'D2-00005', 'quote': '不能删'},
+                                                            {'source_id': 'A2-00001', 'quote': '低价品保留在候选中'}]},
+            'reason': UNSTATED, 'boundary': UNSTATED}], 'open_questions': []}, sample)
+        self.assertEqual(result['items'][0]['conclusion']['evidence'][0]['line'], 5)
+
+    def test_discovery_groups_stage_pairs_into_ordered_requirements(self):
+        from decision_memory.sources import discover_requirements
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'REQ-x'
+            for _, dialogue_name, dialogue, artifact_name, artifact in reversed(self.NODES):
+                for name, text in ((dialogue_name, dialogue), (artifact_name, artifact)):
+                    target = root / Path(name).relative_to('r')
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(text, encoding='utf-8')
+            annotation = Path(directory) / '评测标注' / '应被沉淀知识标注.md'
+            annotation.parent.mkdir()
+            annotation.write_text('答案', encoding='utf-8')
+            samples = discover_requirements(Path(directory))
+        self.assertEqual([sample.sample_id for sample in samples], ['REQ-x'])
+        self.assertEqual(samples[0].node_stages, {1: '需求分析', 2: '技术设计'})
+        self.assertNotIn('答案', samples[0].prompt_text())
+
+    def test_scorer_maps_requirement_predictions_to_their_requirement(self):
+        self.assertEqual(official_eval.requirement_of({'stage': 'requirement', 'sample_id': 'REQ-a-b'}), 'REQ-a-b')
+        self.assertEqual(official_eval.requirement_of({'stage': 'design', 'sample_id': 'REQ-a-design'}), 'REQ-a')
+
+
+class RepairTests(unittest.TestCase):
+    def setUp(self):
+        self.sample = make_sample(DIALOGUE, ARTIFACT, 'design')
+        ids = {source.text: key for key, source in self.sample.catalog.items()}
+        self.user = ids['不能删，低价品也要参与排序。']
+
+    def test_repair_strips_bad_citations_and_downgrades_unsupported_fields(self):
+        from decision_memory.validation import repair_result
+        payload = {'items': [
+            {'conclusion': {'text': '低价品参与排序', 'evidence': [{'source_id': self.user, 'quote': '低价品也要参与排序'},
+                                                              {'source_id': self.user, 'quote': '编造的引文'}]},
+             'reason': {'text': '用户说的', 'evidence': [{'source_id': 'D09999', 'quote': 'x'}]},
+             'boundary': {'text': '有边界但没证据', 'evidence': []}},
+            {'conclusion': {'text': '无证据结论', 'evidence': [{'source_id': self.user, 'quote': '不存在'}]},
+             'reason': UNSTATED, 'boundary': UNSTATED}],
+            'open_questions': [{'text': '无证据', 'evidence': []}]}
+        fixed, notes = repair_result(payload, self.sample)
+        result = validate_result(fixed, self.sample)
+        self.assertEqual(len(result['items']), 1)
+        item = result['items'][0]
+        self.assertEqual(len(item['conclusion']['evidence']), 1)
+        self.assertEqual((item['reason']['text'], item['boundary']['text']), ('未说明', '未说明'))
+        self.assertEqual(result['open_questions'], [])
+        self.assertTrue(any('已删除' in note for note in notes))
+
+    def test_pipeline_repairs_only_after_the_strict_retry_and_records_it(self):
+        from decision_memory.pipeline import extract
+        bad = {'items': [{'conclusion': {'text': '低价品参与排序', 'evidence': [
+                   {'source_id': self.user, 'quote': '低价品也要参与排序'}]},
+                          'reason': {'text': '无证据理由', 'evidence': []}, 'boundary': UNSTATED}],
+               'open_questions': []}
+        client = FakeClient([bad, bad])
+        result = extract(self.sample, client, 'baseline')
+        self.assertEqual(len(client.prompts), 2)
+        self.assertIn('校验失败', client.prompts[1][1])
+        self.assertEqual(result['items'][0]['reason']['text'], '未说明')
+        self.assertTrue(result['checks']['citation_repairs'])
+        self.assertTrue(any('保守修复' in note for note in result['review_notes']))
+
+
+class ExtraFileTests(unittest.TestCase):
+    """The folder layout is fixed, but a requirement may carry more files than the two stage pairs."""
+
+    def build(self, directory):
+        files = {
+            'REQ-a/上下文/技术设计确认记录.md': '**用户：**\n不能删。\n',
+            'REQ-a/产物/技术方案.md': '- 候选保留。\n',
+            'REQ-a/上下文/需求确认记录.md': '**用户：**\n归排序方。\n',
+            'REQ-a/产物/需求分析.md': '- 排序归排序方。\n',
+            'REQ-a/上下文/数据口径说明.md': '# 口径\n浏览 pv 一次计一次。\n',
+            'REQ-a/产物/接口清单.md': '- 复用现有接口。\n',
+            'REQ-b/上下文/需求确认记录.md': '**用户：**\n别的需求。\n',
+            'REQ-b/产物/需求分析.md': '- 别的需求。\n',
+            '评测标注/应被沉淀知识标注.md': '答案',
+        }
+        for name, text in files.items():
+            target = Path(directory) / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding='utf-8')
+
+    def test_extra_files_have_types_but_no_inferred_chronology(self):
+        from decision_memory.sources import discover_requirements
+        with tempfile.TemporaryDirectory() as directory:
+            self.build(directory)
+            sample = discover_requirements(Path(directory), sample_id='REQ-a')[0]
+        self.assertEqual(sample.node_stages, {1: '需求分析', 2: '技术设计'})
+        lines = {source.text: (source.source_id, source.role) for source in sample.catalog.values()}
+        self.assertEqual(lines['归排序方。'], ('D1-00002', 'user'))
+        self.assertEqual(lines['不能删。'], ('D2-00002', 'user'))
+        self.assertEqual(lines['浏览 pv 一次计一次。'], ('D3-00002', 'material'))
+        self.assertEqual(lines['- 复用现有接口。'], ('A4-00001', 'material'))
+        prompt = json.loads(sample.prompt_text())
+        self.assertEqual(len(prompt['nodes']), 2)
+        for key in ('D3-00002', 'A4-00001'):
+            self.assertEqual(sample.catalog[key].document_type, 'supplement')
+            self.assertIsNone(sample.catalog[key].node)
+        self.assertEqual(len(prompt['documents']), 6)
+        self.assertNotIn('答案', sample.prompt_text())
+
+    def test_only_the_selected_requirement_is_read(self):
+        from decision_memory import sources
+        with tempfile.TemporaryDirectory() as directory:
+            self.build(directory)
+            reads = []
+            original = sources.read_text
+            with patch.object(sources, 'read_text', side_effect=lambda target: reads.append(target.name) or original(target)):
+                sources.discover_requirements(Path(directory), sample_id='REQ-b')
+        self.assertEqual(sorted(reads), ['需求分析.md', '需求确认记录.md'])
+
+    def test_zip_and_directory_give_the_same_sample(self):
+        from decision_memory.sources import discover_requirements
+        with tempfile.TemporaryDirectory() as directory:
+            self.build(directory)
+            archive_path = Path(directory) / 'samples.zip'
+            with zipfile.ZipFile(archive_path, 'w') as archive:
+                for file in Path(directory).rglob('*.md'):
+                    archive.write(file, file.relative_to(directory).as_posix())
+            from_dir = discover_requirements(Path(directory), sample_id='REQ-a')[0]
+            from_zip = discover_requirements(archive_path, sample_id='REQ-a')[0]
+        self.assertEqual(from_zip.node_stages, from_dir.node_stages)
+        self.assertEqual({k: v.text for k, v in from_zip.catalog.items()}, {k: v.text for k, v in from_dir.catalog.items()})

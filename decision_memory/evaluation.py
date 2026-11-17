@@ -40,6 +40,11 @@ def validate_references(references, sample):
             if not isinstance(item, dict) or item.get('source') not in ('dialogue', 'artifact'):
                 raise ValueError('参考证据的 source 只能为 dialogue/artifact')
             prefix = 'D' if item['source'] == 'dialogue' else 'A'
+            if item.get('node') is not None:
+                # Multi-node samples number lines per node: D1-…, A2-….
+                if type(item['node']) is not int or item['node'] < 1:
+                    raise ValueError('参考证据的 node 必须是正整数')
+                prefix += f'{item["node"]}-'
             quote = item.get('quote')
             # A leading speaker label on a mid-message fragment is metadata, not quoted text.
             needle = plain(SPEAKER.sub('', quote)) if isinstance(quote, str) else ''

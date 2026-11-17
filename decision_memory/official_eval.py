@@ -142,8 +142,10 @@ def load_references(dataset: Path) -> dict:
     return references
 
 
-def requirement_of(sample_id):
-    return sample_id.rsplit('-', 1)[0]
+def requirement_of(prediction):
+    if prediction.get('stage') == 'requirement':
+        return prediction['sample_id']
+    return prediction['sample_id'].rsplit('-', 1)[0]
 
 
 def item_payload(prediction):
@@ -288,7 +290,7 @@ def evaluate(dataset: Path, predictions_dir: Path, client, scope='requirement'):
     references = load_references(dataset)
     grouped = {}
     for prediction in load_predictions(predictions_dir):
-        grouped.setdefault(requirement_of(prediction['sample_id']), []).append(prediction)
+        grouped.setdefault(requirement_of(prediction), []).append(prediction)
     judgments, per_requirement = {}, {}
     for requirement, predictions in sorted(grouped.items()):
         if requirement not in references:

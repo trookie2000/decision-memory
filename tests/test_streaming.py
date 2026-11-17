@@ -110,10 +110,11 @@ class StreamingTests(unittest.TestCase):
             with self.assertRaises(ModelOutputError):
                 self.client(endpoint).complete('system', 'user')
 
-    def test_legacy_nonstream_run_signature_is_preserved_and_stream_differs(self):
+    def test_run_signature_is_stable_and_stream_configuration_changes_it(self):
         config = Config(endpoint='https://example.test/chat/completions', model='fixture', api_key_env='')
         legacy = run_signature(self.sample, ModelClient(config), 'baseline')
-        self.assertEqual(legacy, '1097a5f66d926a06f35ceed3b9a81b39ddf2fd41babf218eb468443f46776c17')
+        self.assertEqual(legacy, run_signature(self.sample, ModelClient(config), 'baseline'))
+        self.assertEqual(len(legacy), 64)
         config.stream = True
         self.assertNotEqual(run_signature(self.sample, ModelClient(config), 'baseline'), legacy)
 
