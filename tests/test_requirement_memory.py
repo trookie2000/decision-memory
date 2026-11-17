@@ -51,6 +51,18 @@ class RequirementMemoryTests(unittest.TestCase):
         self.assertEqual(result['memory_index'][0]['version'], 2)
         self.assertEqual(result['relations'], [{'from': 'E2', 'to': 'E1', 'type': 'updates'}])
 
+    def test_unstated_normalization_survives_events_history_and_replay(self):
+        first = added()
+        first['item']['reason'] = {'text': '未说明。', 'evidence': []}
+        result = self.compile([first])
+        wanted = {'text': '未说明', 'evidence': [], 'protocol_normalization': {
+            'rule': 'unstated-punctuation-v1', 'original_text': '未说明。'}}
+        self.assertEqual(result['items'][0]['reason'], wanted)
+        self.assertEqual(result['events'][0]['item']['reason'], wanted)
+        self.assertEqual(result['history'][0]['item']['reason'], wanted)
+        replayed = self.compile(result['events'], result['open_questions'])
+        self.assertEqual(replayed, result)
+
     def test_an_earlier_artifact_can_be_invalidated(self):
         first = added()
         first['item'] = item(source='A.N1.00001')

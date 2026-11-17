@@ -28,6 +28,19 @@ def validate_field(field: object, sample: Sample, location: str, required: bool)
     if not isinstance(field, dict) or not isinstance(field.get('text'), str):
         raise ValueError(f'{location} 必须包含 text 和 evidence')
     text = field['text'].strip()
+    normalization = None
+    if 'protocol_normalization' in field:
+        record = field['protocol_normalization']
+        if (not isinstance(record, dict) or set(record) != {'rule', 'original_text'}
+                or record.get('rule') != 'unstated-punctuation-v1'
+                or not isinstance(record.get('original_text'), str)
+                or record['original_text'].strip() not in ('未说明。', '未说明.')
+                or text != '未说明' or required):
+            raise ValueError(f'{location} 未说明规范化记录无效')
+        normalization = dict(record)
+    elif text in ('未说明。', '未说明.'):
+        normalization = {'rule': 'unstated-punctuation-v1', 'original_text': field['text']}
+        text = '未说明'
     if not text or (required and text == '未说明'):
         raise ValueError(f'{location} 缺少明确结论')
     evidence = validate_evidence(field.get('evidence'), sample, location)
@@ -35,7 +48,10 @@ def validate_field(field: object, sample: Sample, location: str, required: bool)
         raise ValueError(f'{location} 未说明字段应无证据')
     if text != '未说明' and not evidence:
         raise ValueError(f'{location} 缺少原文证据')
-    return {'text': text, 'evidence': evidence}
+    result = {'text': text, 'evidence': evidence}
+    if normalization is not None:
+        result['protocol_normalization'] = normalization
+    return result
 
 
 def validate_result(payload: object, sample: Sample) -> dict:
