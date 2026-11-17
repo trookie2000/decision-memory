@@ -84,6 +84,14 @@ class FieldGroundingTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, symbol):
                     validate_literal_grounding(value)
 
+    def test_exact_absolute_api_path_in_own_quote_is_supported(self):
+        value = compiled(context())
+        value['items'][0]['conclusion'] = {'text': '仅开放 /api/v1/internal/query', 'evidence': [
+            {'source_id': 'A.N1.00001', 'quote': '仅开放 /api/v1/internal/query。'}]}
+        proof = validate_literal_grounding(value)
+        self.assertEqual(proof['fields'][0]['symbols'], [
+            {'symbol': '/api/v1/internal/query', 'source_ids': ['A.N1.00001']}])
+
     def test_retrieval_is_bounded_stable_and_does_not_mutate_inputs(self):
         ctx = context()
         value = compiled(ctx)

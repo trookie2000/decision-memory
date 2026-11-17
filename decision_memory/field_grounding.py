@@ -8,7 +8,7 @@ from .evidence_ids import reference_catalog
 
 SYMBOLS = re.compile(
     r'(?<![A-Za-z0-9_])(?:@[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+'
-    r'|[A-Za-z_][A-Za-z0-9_-]*(?:/[A-Za-z0-9_.-]+)+'
+    r'|/?[A-Za-z_][A-Za-z0-9_-]*(?:/[A-Za-z0-9_.-]+)+'
     r'|[A-Za-z_][A-Za-z0-9_]*(?:(?:\.|::|#)[A-Za-z_][A-Za-z0-9_]*)+'
     r'|(?:[A-Z][a-z0-9]+|[a-z][a-z0-9]*)(?:[A-Z][A-Za-z0-9]*)+'
     r'|[A-Z]{2,}[a-z][A-Za-z0-9]*)(?![A-Za-z0-9_])')
