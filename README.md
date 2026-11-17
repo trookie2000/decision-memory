@@ -6,6 +6,8 @@ Python 3.11+。运行时仅使用标准库。默认输出 JSON 和 Markdown，�
 
 ## 当前验证范围
 
+2026-11-17 输入修复（工程 0.4.1）：grounded 现在通过共用输入描述识别目录、ZIP、显式清单和单阶段，保留真实节点与补充材料类型；两条数据集 grounded 命令读取相同目录时发送相同材料。新增 grounded 逐字来源协议 v2，v1 结果仍可离线校验，不能直接复用为新版本运行。此处的 grounded 协议 v2 与实验开关 `--evidence-audit v2` 是两个不同协议。全量 351 项测试通过，本轮没有真实模型新分数。
+
 2026-11-17 合并更新：保留目录式需求输入及显式清单、记忆事件、按需证据审计两条流程，兼容旧四文件员工回传与新匿名 A/B 评分。整合后 338 项自动测试通过；G002～G004 的 157 份历史文件重新通过只读审计。此结果证明工程兼容性，不代表合并版本已有真实模型新分数。
 
 2026-11-17，工程版本 0.4.0 增加材料类型与阶段顺序分离、跨节点失效检查、可重放决策历史和程序核查队列。数据集入口默认按需求合并，旧单阶段用法需显式传 `--unit stage`。实现范围、验证和尚未完成的优化见 [输入与状态改造记录](docs/input-state-upgrade.md)。本轮尚未运行真实模型或新增独立评分，历史分数不能视为新版本成绩。
@@ -133,6 +135,8 @@ python3 -m decision_memory batch --dataset data/public-samples.zip \
 verified 模式还输出 `decisions`，保留 `active`、`superseded`、`pending`、`conflict` 状态。`review_notes` 记录模型复核意见。`checks` 区分逐字引用校验、模型复核和人工评审。引用存在性校验与语义支持度需要分别核对。
 
 需求级 verified 结果还包含 `input_documents`、`decision_history` 和 `review_queue`。后续明确决定可以替换早期产物；代码仅在同议题、同适用范围且有后续用户/阶段产物依据时执行失效处理，保留原记录与替换依据。材料冲突或未经证实的替换进入程序核查队列，`checks.requires_review=true`；原文明示且尚未解决的业务待定事项才属于 `open_questions`。语义议题归并仍由模型完成，尚未实现独立字段验证器或完整记忆库。
+
+grounded 为最终知识快照策略，两次正常模型调用，使用 `--mode grounded` 显式开启。顶层 `extract --dataset` 和 `requirement extract --dataset` 均读取完整需求目录及额外 Markdown；清单使用 `requirement extract --manifest`，只读取明确列出的节点对。结果记录 `input_contract`，绑定范围、节点、材料类型和原始来源编号；它不输出事件历史。`requirement inspect --dataset ... --mode grounded` 可离线核对该策略实际输入。完整用法与边界见 [需求输入说明](docs/requirement-memory.md#grounded-最终快照输入)。
 
 单样本成功后原子写入 JSON，并生成 Markdown。批量运行在 `summary.json` 逐条记录成功、失败和复用情况，单条失败后继续处理其余样本，任一失败时退出码为 2。每个样本的 `metrics` 保留调用数、HTTP 尝试数、耗时和 token 用量。网关未返回用量时保留 `null`。
 

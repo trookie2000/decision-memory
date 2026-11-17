@@ -45,7 +45,7 @@ def result_digest(result):
 
 def validate_saved(result, sample, client=None, mode=None):
     if isinstance(result, dict) and (result.get('schema_version') == 5 or result.get('mode') == 'grounded'
-                                    or result.get('extraction_protocol') == 'whole-line-grounded-v1'):
+                                    or result.get('extraction_protocol') in ('whole-line-grounded-v1', 'whole-line-grounded-v2')):
         from .grounded import validate_grounded_saved
         return validate_grounded_saved(result, sample, client, mode)
     from .requirements import RequirementSample

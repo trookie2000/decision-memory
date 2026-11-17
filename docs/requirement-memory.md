@@ -100,6 +100,7 @@ python3 -m decision_memory requirement validate \
 | `baseline` | 全部节点的对话与产物，一次生成事件 | 1 |
 | `verified` | 先生成事件，再用全部原文复核事件、逐字段支持和明确的理由未知 | 2 |
 | `artifact-only` | 只向模型提供各节点产物 | 1 |
+| `grounded` | 生成最终快照，程序展开整行来源，再逐字段复核；仅 extract 可选 | 2 |
 
 未开启审计时，每步格式或引用错误最多修复一次，HTTP 重试沿用模型配置。实际调用和 token 用量保存在 `calls`、`metrics` 中。阶段级 `verified` 继续使用原来的 3 步流程。
 
@@ -200,6 +201,30 @@ python3 -m decision_memory requirement extract \
 结果使用 schema 4，增加 `literal_grounding` 及输入、证据格式标记。模型原始回复在 run 中仍是编号格式，成功结果保存展开后的逐字引文。离线 validate 重建编号、逐字段符号绑定及原有审计；删除证明、缩短为未提供编号的引文或简单降级 schema 会被拒绝。
 
 v2 暂作为实验开关。2026-11-17 的有限对照未达到推荐门槛，结果及限制见 [v2 验收记录](evidence-audit-v2-evaluation.md)。测试通过和候选全部处理不等于知识质量提升。拒绝结果或待复核草稿仍应计入完成率与成本，不能只挑成功结果报告。
+
+## grounded 最终快照输入
+
+工程 0.4.1 新增共用输入描述，修复目录式完整需求在 grounded 中被误识别为 stage、节点列表为空的问题。范围、已知节点、材料类型和发言角色分别表达；补充材料即使含用户标记或位于产物目录，也不会获得正式阶段确认的身份。未知归属的补充材料 `node_id/node_order=null`，可支持无冲突的背景事实，不能凭编号推断为后续决定。
+
+```bash
+python3 -m decision_memory requirement inspect \
+  --dataset data/public-samples.zip --mode grounded
+
+python3 -m decision_memory requirement extract \
+  --dataset data/public-samples.zip --requirement-id YOUR-REQUIREMENT-ID \
+  --config config.local.toml --mode grounded --output runs/grounded-new/result.json
+
+python3 -m decision_memory requirement validate \
+  --dataset data/public-samples.zip --result runs/grounded-new/result.json
+```
+
+同一数据集也可使用顶层 `extract --dataset ... --sample-id ... --mode grounded`，其完整需求材料与上述命令一致；默认会包括上下文/产物目录中的额外 Markdown。显式清单用 `--manifest` 替换数据集参数，支持编码、测试等自定义有序节点，只读取清单列出的节点对。`--evidence-audit` 仍属于 verified 事件策略，不能与 grounded 混用；compare 暂保留原有三个模式。
+
+grounded 输出最终知识快照，不生成事件历史。它保存 `input_contract`，绑定输入范围、原始来源编号、节点与材料身份；校验命令按其中的来源格式重建输入。明确的用户归因必须引用该字段自己的正式 dialogue/user 证据，补充材料中的用户标记不能替代它。
+
+新快照使用 `whole-line-grounded-v2`、schema 5，来源列增加 document_type；该名称与实验性 `--evidence-audit v2` 无关。旧 `whole-line-grounded-v1` 的 0.3/0.4 产物按原策略离线校验，不改写旧证明，不作为当前模型配置下的结果复用。旧版目录输入若已经丢失需求范围/节点，不能凭离线修饰变成正确新结果，应保留旧档案并在新目录重跑。
+
+这一步统一了 grounded 的输入描述、快照与评分前来源校验。事件策略仍保留原有清单与已知阶段对的读取协议，尚未自动接入所有额外材料，也未与快照策略统一为一条算法；这些属于后续整合。程序通过字段字面与引用检查不代表已独立证明语义正确。本轮没有新模型成绩。
 
 ## 使用真实历史会话评测
 

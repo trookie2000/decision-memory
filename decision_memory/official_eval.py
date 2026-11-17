@@ -32,6 +32,8 @@ JUDGE = '''你是命题07的评测员，严格按比赛口径给参赛方案的�
 - negatives：不应作为正向知识沉淀的过程信息（P），含其最终状态；
 - items：参赛方案输出的条目，含结论、理由、边界及其引用的原文行。
 - source_materials：程序根据数据集重建的真实原文行，含文件、节点或阶段、角色与行号；不要只信条目自报的引文。
+document_type 与发言角色独立。supplement 为补充材料，节点未知时不得推断为最新阶段；
+它可支持无冲突的背景定义，但不能因包含用户标记就作为阶段用户确认、或单独推翻明确决定。
 
 第一步，逐条判定 items（verdict 只能取以下之一）：
 - valid：结论与最终产物和最后有效决策一致，理由与边界有原文支持，是值得后续复用的知识（不必在 positives 中）；
@@ -332,16 +334,20 @@ def validated_inputs(dataset, predictions, scope):
         if whole:
             if len(rows) != 1:
                 raise ValueError('同一需求不能混用需求级与阶段级预测，也不能重复预测')
-            manifest_protocol = whole[0].get('scope') == 'requirement'
+            source_format = (whole[0].get('input_contract') or {}).get('source_format')
+            manifest_protocol = whole[0].get('scope') == 'requirement' and source_format != 'directory'
             samples = (discover_requirements if manifest_protocol else discover_directory_requirements)(dataset, requirement)
             validate_saved(whole[0], samples[0])
             source_sample = samples[0]
+            from .input_contract import describe_input
+            contract = describe_input(source_sample)
+            node_stages = {node['id']: node['stage'] for node in contract['nodes']}
             source_rows = []
             for source in source_sample.catalog.values():
-                node = (source_sample.nodes[source_sample.node_order(source.source_id)] if manifest_protocol else
-                        {'id': source.node, 'stage': source_sample.node_stages.get(source.node)})
+                location = contract['source_nodes'][source.source_id]
                 source_rows.append({'source_id': source.source_id, 'file': source.file, 'line': source.line,
-                                    'role': source.role, 'text': source.text, 'stage': node['stage'], 'node_id': node['id']})
+                                    'role': source.role, 'document_type': source.document_type, 'text': source.text,
+                                    'stage': node_stages.get(location['node_id']), **location})
         else:
             by_id = {sample.sample_id: sample for sample in stages}
             supplied = [row['sample_id'] for row in rows]
@@ -354,7 +360,8 @@ def validated_inputs(dataset, predictions, scope):
                 sample = by_id[row['sample_id']]
                 validate_saved(row, sample)
                 source_rows.extend({'source_id': source.source_id, 'file': source.file, 'line': source.line,
-                                    'role': source.role, 'text': source.text, 'stage': sample.stage}
+                                    'role': source.role, 'document_type': source.document_type,
+                                    'text': source.text, 'stage': sample.stage}
                                    for source in sample.catalog.values())
         sources[requirement] = source_rows
         for row in rows:

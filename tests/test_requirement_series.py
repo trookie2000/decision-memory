@@ -125,6 +125,22 @@ class RequirementSeriesTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '实现|提示词'):
                 battle.run(0, retry_extraction=True)
 
+    def assert_implementation_rechecked(self, name):
+        battle = self.paused_after_freeze()
+        original = Path.read_bytes
+        def changed(path):
+            content = original(path)
+            return content + b'\n# changed input protocol\n' if path.name == name else content
+        with patch.object(Path, 'read_bytes', changed):
+            with self.assertRaisesRegex(ValueError, '实现|提示词'):
+                battle.run(0, retry_extraction=True)
+
+    def test_direct_resume_rechecks_shared_input_contract(self):
+        self.assert_implementation_rechecked('input_contract.py')
+
+    def test_direct_resume_rechecks_grounded_implementation(self):
+        self.assert_implementation_rechecked('grounded.py')
+
     def test_scoring_resume_checks_batch_before_any_remote_write(self):
         def extract_and_stop(*args):
             result = Battle._extract_process(*args)

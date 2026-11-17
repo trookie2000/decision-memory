@@ -94,19 +94,22 @@ def add_requirement_arguments(commands):
         source.add_argument('--dataset', type=Path, help='官方 ZIP 或目录，不读取评测标注')
         leaf.add_argument('--requirement-id', help='数据集中的需求目录名')
         if action in ('extract', 'compare'):
-            add_model_arguments(leaf)
+            add_model_arguments(leaf, modes=STAGE_MODES if action == 'extract' else MODES)
             leaf.add_argument('--output', required=True, type=Path)
             if action == 'extract':
                 leaf.add_argument('--evidence-audit', choices=('v1', 'v2'), help='主动开启需求级证据准入和候选覆盖审计，仅 verified')
         elif action == 'inspect':
+            leaf.add_argument('--mode', choices=STAGE_MODES, default='verified', help='检查对应模式实际使用的输入')
             leaf.add_argument('--output', type=Path)
         else:
             leaf.add_argument('--result', required=True, type=Path)
 
 
 def run_requirement(args):
-    from .requirements import discover_requirements, load_requirement_manifest
+    from .requirements import discover_requirements as discover_manifest_requirements, load_requirement_manifest
     from .requirement_pipeline import extract_requirement
+    from .input_contract import describe_input
+    from .grounded import GroundedNeedsReview
     if args.manifest and args.requirement_id:
         raise ValueError('--manifest 不能同时传 --requirement-id')
     action = args.requirement_command
@@ -114,7 +117,9 @@ def run_requirement(args):
     if audit and args.mode != 'verified':
         raise ValueError('--evidence-audit 仅支持 --mode verified')
     saved = read_json(args.result) if action == 'validate' else None
-    requirement_id = args.requirement_id or (saved.get('requirement_id') if isinstance(saved, dict) else None)
+    requirement_id = args.requirement_id or ((saved.get('requirement_id') or
+                      (saved.get('sample_id') if saved.get('stage') == 'requirement' else None))
+                      if isinstance(saved, dict) else None)
     if args.dataset and action != 'inspect' and not requirement_id:
         raise ValueError('--dataset 需要 --requirement-id')
     if action == 'extract' and (args.output.suffix != '.json' or args.output.exists()
@@ -122,10 +127,21 @@ def run_requirement(args):
         raise ValueError('需要尚不存在的 .json 输出路径')
     if action == 'extract' and (args.output.with_suffix('.run').exists() or args.output.with_suffix('.audit.html').exists()):
         raise ValueError('审计 run 目录或报告已存在，请检查原回执；禁止自动重发')
-    samples = ([load_requirement_manifest(args.manifest)] if args.manifest
-               else discover_requirements(args.dataset, requirement_id))
+    saved_contract = saved.get('input_contract') if isinstance(saved, dict) else None
+    if saved_contract is not None and not isinstance(saved_contract, dict):
+        raise ValueError('input_contract 必须为对象')
+    saved_format = (saved_contract or {}).get('source_format')
+    directory_input = (saved_format == 'directory' if action == 'validate'
+                       else getattr(args, 'mode', None) == 'grounded')
+    if args.manifest:
+        samples = [load_requirement_manifest(args.manifest)]
+    elif directory_input:
+        samples = discover_requirements(args.dataset, sample_id=requirement_id)
+    else:
+        samples = discover_manifest_requirements(args.dataset, requirement_id)
     if action == 'inspect':
-        summary = {'requirements': [{'requirement_id': sample.sample_id, 'nodes': list(sample.nodes),
+        summary = {'requirements': [{'requirement_id': sample.sample_id, 'nodes': describe_input(sample)['nodes'],
+                                    'input_contract': describe_input(sample),
                                     'input_fingerprint': sample.fingerprint, 'file_hashes': sample.file_hashes,
                                     'source_lines': len(sample.catalog)} for sample in samples]}
         if args.output:
@@ -136,7 +152,8 @@ def run_requirement(args):
     sample = samples[0]
     if action == 'validate':
         validate_saved(saved, sample)
-        return {'requirement_id': sample.sample_id, 'exact_citations': 'passed', 'event_replay': 'passed',
+        replay = 'snapshot_replay' if saved.get('mode') == 'grounded' else 'event_replay'
+        return {'requirement_id': sample.sample_id, 'exact_citations': 'passed', replay: 'passed',
                 'items': len(saved['items']), 'semantic_quality': 'requires_human_review'}, 0
     if action == 'compare':
         from .comparison import run_comparison
@@ -148,14 +165,18 @@ def run_requirement(args):
                 'metrics': result['metrics'], 'human_review': 'pending'}, 0
     from .requirement_audit_run import AuditNeedsReview
     try:
-        result = extract_requirement(sample, ModelClient(Config.load(args.config)), args.mode,
-                                     evidence_audit=audit, run_dir=args.output.with_suffix('.run') if audit else None)
-    except AuditNeedsReview as error:
+        client = ModelClient(Config.load(args.config))
+        if args.mode == 'grounded':
+            result = extract(sample, client, args.mode, run_dir=args.output.with_suffix('.run'))
+        else:
+            result = extract_requirement(sample, client, args.mode,
+                                         evidence_audit=audit, run_dir=args.output.with_suffix('.run') if audit else None)
+    except (AuditNeedsReview, GroundedNeedsReview) as error:
         return {'audit_status': 'needs_review', 'draft': str(args.output.with_suffix('.run') / 'draft.json'),
                 'message': str(error)}, 2
     save_result(args.output, result, sample=sample)
     return {'output': str(args.output), 'requirement_id': sample.sample_id, 'items': len(result['items']),
-            'history_events': len(result['history']), 'metrics': result['metrics']}, 0
+            **({'history_events': len(result['history'])} if 'history' in result else {}), 'metrics': result['metrics']}, 0
 
 
 def run_official(args):
@@ -312,11 +333,13 @@ def discover(path, unit='requirement', sample_id=None):
 
 
 def inspect_dataset(path, unit='requirement'):
+    from .input_contract import describe_input
     samples = discover(path, unit)
     return {'samples': [{'sample_id': sample.sample_id, 'stage': sample.stage,
                          'fingerprint': sample.fingerprint,
                          'file_hashes': sample.file_hashes,
                          'documents': sample.documents(),
+                         'input_contract': describe_input(sample),
                          'dialogue_lines': sum(key.startswith('D') for key in sample.catalog),
                          'artifact_lines': sum(key.startswith('A') for key in sample.catalog),
                          'files': sorted({source.file for source in sample.catalog.values()})}
