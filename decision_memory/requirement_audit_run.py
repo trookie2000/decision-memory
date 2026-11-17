@@ -61,10 +61,18 @@ class AuditNeedsReview(RuntimeError):
 
 def _review_markers(payload):
     """A structure-only repair may preserve uncertainty, never erase it."""
-    audit = payload.get('evidence_audit') if isinstance(payload, dict) else None
-    if not isinstance(audit, dict):
-        return set()
     result = set()
+    if not isinstance(payload, dict):
+        return result
+    checks = payload.get('field_checks')
+    if isinstance(checks, list):
+        for row in checks:
+            if (isinstance(row, dict) and row.get('status') == 'unsupported'
+                    and type(row.get('item_index')) is int and isinstance(row.get('field'), str)):
+                result.add(('field_checks', row['item_index'], row['field']))
+    audit = payload.get('evidence_audit')
+    if not isinstance(audit, dict):
+        return result
     for name, identity in (('admission_checks', 'knowledge_key'), ('coverage_checks', 'unit_id')):
         rows = audit.get(name)
         if not isinstance(rows, list):

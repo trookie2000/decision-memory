@@ -11,6 +11,7 @@ from .sources import Sample
 from .validation import validate_evidence, validate_result
 
 MODES = ('baseline', 'verified', 'artifact-only')
+STAGE_MODES = (*MODES, 'grounded')
 PROMPT_HASH = hashlib.sha256((prompts.EXTRACT + prompts.DECISIONS + prompts.REVIEW).encode()).hexdigest()
 
 
@@ -78,7 +79,10 @@ def drop_superseded(result, decisions, context):
     return {**result, **renumbered}, notes
 
 
-def extract(sample: Sample, client: ModelClient, mode: str = 'verified') -> dict:
+def extract(sample: Sample, client: ModelClient, mode: str = 'verified', *, run_dir=None) -> dict:
+    if mode == 'grounded':
+        from .grounded import extract_grounded
+        return extract_grounded(sample, client, run_dir)
     if mode not in MODES:
         raise ValueError('不支持的提取模式')
     context = sample

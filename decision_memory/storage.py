@@ -44,6 +44,10 @@ def result_digest(result):
 
 
 def validate_saved(result, sample, client=None, mode=None):
+    if isinstance(result, dict) and (result.get('schema_version') == 5 or result.get('mode') == 'grounded'
+                                    or result.get('extraction_protocol') == 'whole-line-grounded-v1'):
+        from .grounded import validate_grounded_saved
+        return validate_grounded_saved(result, sample, client, mode)
     from .requirements import RequirementSample
     if isinstance(sample, RequirementSample) or (isinstance(result, dict) and result.get('scope') == 'requirement'):
         from .requirement_pipeline import validate_requirement_saved
@@ -77,7 +81,7 @@ def render_markdown(result):
         proof = result.get('grounding_review')
         lines.extend(['字段支持复核：' + ('模型已逐字段复核，仍待人工确认。' if proof else '未执行结构化字段复核。'), ''])
         lines.extend(['节点顺序：' + ' → '.join(node['id'] + '（' + node['stage'] + '）' for node in result['nodes']),
-                      '', '以下条目为当前知识，历史版本另列。', ''])
+                      '', '以下条目为最终知识快照。' if result.get('schema_version') == 5 else '以下条目为当前知识，历史版本另列。', ''])
     for item in result['items']:
         lines.extend([f'## {item["id"]}', ''])
         for key, title in (('conclusion', '结论'), ('reason', '理由'), ('boundary', '适用边界')):
@@ -93,7 +97,7 @@ def render_markdown(result):
             for evidence in question['evidence']:
                 lines.append(f'  - `{evidence["source_id"]}` · {evidence["file"]} 第 {evidence["line"]} 行 · {evidence["quote"]}')
         lines.append('')
-    if result.get('scope') == 'requirement':
+    if result.get('scope') == 'requirement' and result.get('schema_version') != 5:
         lines.extend(['## 变更历史', '', '已失效或已替换的历史版本不作为现行知识。', ''])
         for event in result['history']:
             lines.extend([f'### {event["id"]} · {event["operation"]} · {event["status"]}', '',
@@ -130,6 +134,15 @@ def save_result(path: Path, result, *, sample=None):
     markdown = path.with_suffix('.md')
     if path.exists() or markdown.exists():
         raise ValueError('输出已存在，请指定新的输出文件或使用 batch --resume')
+    if result.get('schema_version') == 5 or result.get('mode') == 'grounded':
+        if sample is None:
+            raise ValueError('grounded 保存需要原始材料')
+        result['result_digest'] = result_digest(result)
+        validate_saved(result, sample)
+        rendered = render_markdown(result)
+        write_text(markdown, rendered)
+        write_json(path, result)
+        return
     if result.get('schema_version') in (3, 4) and result.get('scope') == 'requirement':
         from .requirement_audit_report import render_audit_html
         report = path.with_suffix('.audit.html')

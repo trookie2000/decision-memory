@@ -10,7 +10,7 @@ from pathlib import Path
 from .client import Config, ModelClient, ModelError
 from .collaboration import BattleConfig, DocsCLI, MarioMCP, TransportError
 from .evaluation import make_worksheet, score_worksheet, validate_references
-from .pipeline import MODES, extract
+from .pipeline import MODES, STAGE_MODES, extract
 from .sources import STAGES, discover_samples, load_sample
 from .storage import read_json, render_markdown, save_result, validate_saved, write_json, write_text
 
@@ -25,7 +25,7 @@ def parser():
     add_sample_arguments(single, required=False)
     single.add_argument('--dataset', type=Path, help='从官方数据集选一个阶段；不读取评测标注')
     single.add_argument('--sample-id', help='--dataset 中的完整阶段编号')
-    add_model_arguments(single)
+    add_model_arguments(single, modes=STAGE_MODES)
     single.add_argument('--output', required=True, type=Path)
     batch = commands.add_parser('batch', help='对官方格式样本批量提取')
     batch.add_argument('--dataset', required=True, type=Path)
@@ -293,9 +293,9 @@ def add_sample_arguments(command, required=True):
     command.add_argument('--stage', required=required, choices=STAGES)
 
 
-def add_model_arguments(command):
+def add_model_arguments(command, modes=MODES):
     command.add_argument('--config', required=True, type=Path)
-    command.add_argument('--mode', choices=MODES, default='verified')
+    command.add_argument('--mode', choices=modes, default='verified')
 
 
 def inspect_dataset(path):
@@ -382,8 +382,9 @@ def run(args):
                 raise ValueError('需要 --dataset/--sample-id 或完整的 --dialogue/--artifact/--stage')
             sample = load_sample(args.dialogue, args.artifact, args.stage)
         client = ModelClient(Config.load(args.config))
-        result = extract(sample, client, args.mode)
-        save_result(args.output, result)
+        result = extract(sample, client, args.mode,
+                         run_dir=args.output.with_suffix('.run') if args.mode == 'grounded' else None)
+        save_result(args.output, result, sample=sample)
         return {'output': str(args.output), 'items': len(result['items']), 'metrics': result['metrics']}, 0
     if args.command == 'batch':
         summary = batch_extract(args)
