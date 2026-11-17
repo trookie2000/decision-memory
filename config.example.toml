@@ -3,11 +3,13 @@
 endpoint = "https://your-gateway.example/v1/chat/completions"
 model = "your-model-name"
 api_key_env = "DECISION_MEMORY_API_KEY"
-timeout = 180
-retries = 2
-max_tokens = 12000
-max_input_chars = 120000
-json_mode = false
+# Recommended bounds for grounded/run; adapt to the gateway's actual limits.
+timeout = 600
+retries = 0
+max_tokens = 32000
+max_input_chars = 1000000
+# Disable only if the gateway does not support response_format=json_object.
+json_mode = true
 
 # Optional: only enable when supported by the selected gateway/model.
 # stream = true

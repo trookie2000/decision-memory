@@ -79,7 +79,10 @@ def render_markdown(result):
              '引用已通过程序逐字核对。条目语义和覆盖范围仍需人工评审。', '']
     if result.get('scope') == 'requirement':
         proof = result.get('grounding_proof') if result.get('schema_version') == 5 else result.get('grounding_review')
-        lines.extend(['字段支持复核：' + ('模型已逐字段复核，仍待人工确认。' if proof else '未执行结构化字段复核。'), ''])
+        review_status = '模型已逐字段复核，仍待人工确认。' if proof else '未执行结构化字段复核。'
+        if isinstance(proof, dict) and proof.get('citation_retrieval_policy_digest'):
+            review_status = '模型已逐字段复核正文；程序补充引文的语义支持仍待独立确认。'
+        lines.extend(['字段支持复核：' + review_status, ''])
         lines.extend(['节点顺序：' + ' → '.join(node['id'] + '（' + node['stage'] + '）' for node in result['nodes']),
                       '', '以下条目为最终知识快照。' if result.get('schema_version') == 5 else '以下条目为当前知识，历史版本另列。', ''])
     for item in result['items']:
@@ -89,6 +92,8 @@ def render_markdown(result):
             lines.extend([f'**{title}**', '', field['text'], ''])
             for evidence in field['evidence']:
                 label = ' · 程序补充的流程标题' if evidence['source_id'] in field.get('evidence_context', {}).get('added_source_ids', []) else ''
+                if evidence['source_id'] in field.get('evidence_retrieval', {}).get('added_source_ids', []):
+                    label += ' · 程序检索补充引文'
                 lines.extend([f'- `{evidence["source_id"]}` · {evidence["file"]} 第 {evidence["line"]} 行' + label,
                               f'  > {evidence["quote"]}', ''])
     if result['open_questions']:

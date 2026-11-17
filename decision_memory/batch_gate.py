@@ -16,6 +16,7 @@ IMPLEMENTATION_FILES += ('evidence_spans.py', 'requirement_audit.py', 'requireme
                          'requirement_audit_report.py')
 IMPLEMENTATION_FILES += ('grounded.py', 'judge_run.py', 'run_report.py', 'field_grounding.py', 'evidence_ids.py', 'source_hints.py', 'context_sources.py')
 IMPLEMENTATION_FILES += ('grounded_atoms.py',)
+IMPLEMENTATION_FILES += ('citation_retrieval.py',)
 
 
 def file_hash(path):

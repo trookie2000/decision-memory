@@ -33,6 +33,8 @@ def render_result_html(result, sample):
             body += '<h3>' + title + '</h3><p>' + esc(field['text']) + '</p>'
             for ref in field['evidence']:
                 label = ' · 程序补充的流程标题' if ref['source_id'] in field.get('evidence_context', {}).get('added_source_ids', []) else ''
+                if ref['source_id'] in field.get('evidence_retrieval', {}).get('added_source_ids', []):
+                    label += ' · 程序检索补充引文'
                 body += ('<p><a href="#' + source_anchors[ref['source_id']] + '">' + esc(ref['source_id']) +
                          '</a> · ' + esc(ref['file']) + ' 第 ' + esc(ref['line']) + ' 行' + label + '</p><blockquote>' +
                          esc(ref['quote']) + '</blockquote>')

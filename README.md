@@ -6,10 +6,11 @@ Python 3.11+。运行时仅使用标准库。评委 `run` 生成 JSON、Markdown
 
 评委可用 `python3 -m decision_memory run --dataset 样本.zip --scope stage --config 模型.toml --output 新目录`。
 一次生成 JSON、Markdown、HTML 和真实调用回执；点击 HTML 来源可查看原文。完整需求改用 `--scope requirement`。
-新入口的 grounded 模式正在独立验收，模型复核不代表正式质量分。配置、失败处理和报告说明见 [评委本地运行](docs/judge-run.md)。
+配置、失败处理和报告说明见 [评委本地运行](docs/judge-run.md)。运行报告只记录实际执行，质量在固定输出后独立判卷。
 
-评委入口和报告已实现，质量验收尚未通过。最近一轮完整输入自测严格覆盖 22/32，未达到 70%；新保留材料也暴露了理由和最终状态的问题。最新修复的 338 项本地测试通过，真实质量需另验，不能借用第一轮的较高成绩。
-九个未启动任务已完成有限续跑，没有重发此前两次执行未知的请求。各版本、来源消融、单阶段诊断和新材料分别记录在 [grounded 自测](docs/grounded-evaluation.md) 与 [方案](docs/solution.md)。
+2026-11-18：346 项测试通过。最新两个完整需求的本地自测为严格覆盖 24/32（75%）、条目准确 24/26（92.31%）、固定十条来源抽查 10/10，达到本地三门槛。它使用明确提供的全部节点，不能当作正式单阶段成绩；人工确认仍待完成。另一份解释材料的迁移检查未通过，不宣称泛化已解决。
+
+这次来源补充的成对实验保持正文和模型调用不变，严格覆盖从 23/32 提高到 24/32，未使既有条目的引用支持退化。早先单独判卷的 22/32 原件保留，不能把判卷差异都算成工程收益。各版本、消融、失败和完整成本见 [grounded 自测](docs/grounded-evaluation.md)，提交差距及后续优先级见 [提交前验收](docs/submission-readiness.md)。
 
 ## 历史接口与实验记录
 
@@ -63,7 +64,7 @@ cp config.example.toml config.local.toml
 
 接口需要接受 `model`、`messages`、`stream` 和 `max_tokens`。默认使用非流式响应，读取 `choices[0].message.content`。正常完成时 `finish_reason` 必须为 `stop`；过滤、拒绝、工具调用和缺少结束状态均会返回错误。
 
-网关支持 SSE 时，可在模型配置中设置 `stream = true`。客户端收齐完整文本和结束标记后才校验、保存结果，断流按有限次数重试。`timeout` 同时限制流式读取的总时长，可按需要提高到 600 秒。`reasoning_effort` 默认为不发送，取值须由所用接口支持；例如本机 Kimi 官方样本实测使用 `"low"`。推理强度参数的模型差异可参考 [Moonshot 接口校验说明](https://github.com/MoonshotAI/Kimi-Vendor-Verifier/blob/main/tests/k3_features/test_thinking_effort.py)。
+网关支持 SSE 时，可在模型配置中设置 `stream = true`。客户端收齐完整文本和结束标记后才校验、保存结果。新 `run` 和 grounded 禁用 HTTP 自动重试，断流保留未知执行回执并停止后续请求。`timeout` 同时限制连接、响应头和正文的总时长。`reasoning_effort` 默认为不发送，取值须由所用接口支持；例如本机 Kimi 官方样本实测使用 `"low"`。推理强度参数的模型差异可参考 [Moonshot 接口校验说明](https://github.com/MoonshotAI/Kimi-Vendor-Verifier/blob/main/tests/k3_features/test_thinking_effort.py)。
 
 支持 `Authorization: Bearer` 或 `headers_env` 指定的自定义请求头。下面填写的是环境变量名。
 
@@ -79,7 +80,7 @@ Mytoken 相关接入文档展示了自定义请求头的 Chat Completions 接口
 
 HTTP 错误会显示网关返回的错误码、说明和请求 ID，并屏蔽配置中的凭证。HTTP 402 的具体原因以网关说明为准。修正配置后，可使用 `batch --resume` 重试失败样本。
 
-`json_mode` 默认关闭，确认网关支持后可开启。`temperature` 默认不发送。费用单价可配置为每百万输入和输出 token 的价格，未配置时 `estimated_cost` 为 `null`。估算按照标准输入/输出价格计算，缓存优惠、平台积分和失败调用计费以网关账单为准。
+新配置模板开启 `json_mode`，若网关不支持 `response_format=json_object` 则关闭。模板给出 600 秒、32,000 输出 token、1,000,000 输入字符和零 HTTP 重试的建议边界，须适配实际模型限制；输入字符上限不等于模型上下文 token 容量。`temperature` 默认不发送。费用单价可配置为每百万输入和输出 token 的价格，未配置时 `estimated_cost` 为 `null`。缓存优惠、平台积分和失败计费以网关账单为准。
 
 ## 提取和比较
 
@@ -127,7 +128,7 @@ python3 -m decision_memory batch --dataset data/public-samples.zip \
 | verified | 识别决策变化、生成条目、全文复核 | 3 |
 | artifact-only | 只向模型提供最终产物 | 1 |
 
-每个步骤的格式或引用错误最多修复一次。每次 HTTP 请求默认最多重试两次，最多三个尝试。认证错误立即失败。默认每次请求超时 180 秒，输入上限 120,000 字符，输出上限 12,000 tokens。长材料超过上限时返回明确错误，可调整配置或按完整阶段拆分。
+旧接口每个步骤的格式或引用错误最多修复一次。未显式配置的旧客户端缺省为两次 HTTP 重试、180 秒、120,000 输入字符和 12,000 输出 token；复制的新模板使用上一节的建议值。新 `run` 及 grounded 无论配置如何都关闭 HTTP 自动重试。长材料超过配置上限时明确失败，不静默截断；可调整获准配置或按真实输入范围拆分。
 
 ## 结果与恢复
 
