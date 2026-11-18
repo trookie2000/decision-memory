@@ -35,6 +35,7 @@ class RetrievalIndex:
             for key, source, terms, position in self.rows:
                 hits = wanted & terms
                 if (key in used or source.get('role') not in RETRIEVAL_POLICY['roles']
+                        or source.get('document_type') == 'supplement'
                         or len(hits) < RETRIEVAL_POLICY['minimum_new_anchors']):
                     continue
                 score = sum(math.log1p(len(self.rows) / self.frequency[a]) for a in sorted(hits)) / math.sqrt(max(1, len(source['text']) / 120))
@@ -51,7 +52,7 @@ class RetrievalIndex:
 def augment_evidence(result, sample, *, max_bytes=8_000_000):
     """Only add sources to stated item fields; leave input and unknowns intact."""
     from .validation import validate_evidence
-    catalog = {key: {'text': s.text, 'role': s.role, 'file': s.file, 'line': s.line, 'message': s.message}
+    catalog = {key: {'text': s.text, 'role': s.role, 'document_type': s.document_type}
                for key, s in sample.catalog.items()}
     index, updated = RetrievalIndex(catalog), copy.deepcopy(result)
     for item in updated['items']:

@@ -12,14 +12,17 @@ SYMBOLS = re.compile(
     r'|[A-Za-z_][A-Za-z0-9_]*(?:(?:\.|::|#)[A-Za-z_][A-Za-z0-9_]*)+'
     r'|(?:[A-Z][a-z0-9]+|[a-z][a-z0-9]*)(?:[A-Z][A-Za-z0-9]*)+'
     r'|[A-Z]{2,}[a-z][A-Za-z0-9]*)(?![A-Za-z0-9_])')
+# Older saved snapshots were checked before support for URI template segments.
+LEGACY_SYMBOLS = re.compile(SYMBOLS.pattern.replace(
+    r'(?:/(?:[A-Za-z0-9_.-]+|\{[A-Za-z_][A-Za-z0-9_]*\}))+', r'(?:/[A-Za-z0-9_.-]+)+'))
 GENERIC = frozenset(('HTTP', 'HTTPS', 'JSON', 'API', 'CLI', 'SDK', 'UI', 'ID', 'SQL', 'HTML', 'CSS', 'JS', 'TS'))
 CHINESE = re.compile(r'[\u3400-\u9fff]+')
 LITERAL_POLICY = {'policy': 'source-symbols-v1', 'symbols': SYMBOLS.pattern, 'generic': sorted(GENERIC),
                   'matching': 'complete-identifier-or-qualified-path-v1'}
 
 
-def symbols(text):
-    return sorted({match.group() for match in SYMBOLS.finditer(text)
+def symbols(text, *, pattern=SYMBOLS):
+    return sorted({match.group() for match in pattern.finditer(text)
                    if not all(part in GENERIC for part in match.group().split('/'))})
 
 
@@ -38,7 +41,7 @@ def _missing(field):
             if not any(_present(symbol, ref['quote']) for ref in field['evidence'])]
 
 
-def validate_literal_grounding(compiled):
+def validate_literal_grounding(compiled, *, pattern=SYMBOLS):
     rows, issues = [], []
     for index, identity in enumerate(compiled['memory_index']):
         key = identity['knowledge_key']
@@ -46,14 +49,15 @@ def validate_literal_grounding(compiled):
             field = compiled['items'][index][name]
             bindings = [{'symbol': symbol, 'source_ids': sorted({ref['source_id'] for ref in field['evidence']
                                                                if _present(symbol, ref['quote'])})}
-                        for symbol in symbols(field['text'])]
+                        for symbol in symbols(field['text'], pattern=pattern)]
             missing = [row['symbol'] for row in bindings if not row['source_ids']]
             if missing:
                 issues.append(key + '.' + name + ': ' + ', '.join(missing[:12]))
             rows.append({'knowledge_key': key, 'field': name, 'symbols': bindings})
     if issues:
         raise ValueError('字段自身引文未包含实现标识符；请引用实际原文，不跨字段借证：' + '；'.join(issues[:20]))
-    return {'policy': LITERAL_POLICY['policy'], 'policy_digest': digest(LITERAL_POLICY),
+    return {'policy': LITERAL_POLICY['policy'],
+            'policy_digest': digest({**LITERAL_POLICY, 'symbols': pattern.pattern}),
             'input_digest': digest({key: compiled[key] for key in ('items', 'memory_index')}), 'fields': rows}
 
 
@@ -62,16 +66,15 @@ def _bigrams(text):
 
 
 def field_evidence_candidates(compiled, sample, limit=6):
+    from .requirement_memory import current_order
     if type(limit) is not int or not 1 <= limit <= 12:
         raise ValueError('字段建议上限须为1至12')
     catalog = reference_catalog(sample)
     indexed = [(key, ref, _bigrams(ref['quote'])) for key, ref in catalog.items()]
     frequencies = Counter(word for _, _, words in indexed for word in words)
-    events = {row['id']: row for row in compiled['events']}
     result = []
     for index, identity in enumerate(compiled['memory_index']):
-        order = next(node['order'] for node in sample.nodes
-                     if node['id'] == events[identity['event_id']]['node_id'])
+        order = current_order(compiled, sample, identity['knowledge_key'])
         for name in ('conclusion', 'reason', 'boundary'):
             field = compiled['items'][index][name]
             if field['text'] == '未说明':
@@ -83,7 +86,7 @@ def field_evidence_candidates(compiled, sample, limit=6):
             ranked = []
             for reference_id, ref, terms in indexed:
                 source = sample.catalog[ref['source_id']]
-                if sample.node_order(ref['source_id']) > order or (ref['source_id'], ref['quote']) in current:
+                if not sample.available_at(ref['source_id'], order) or (ref['source_id'], ref['quote']) in current:
                     continue
                 hits = sum(_present(symbol, ref['quote']) for symbol in missing)
                 overlap = sum(math.log1p(len(indexed) / (1 + frequencies[word])) for word in words & terms)

@@ -1,0 +1,227 @@
+{
+  "items": [
+    {
+      "id": "K001",
+      "kind": "scope",
+      "conclusion": {
+        "text": "详情缓存仅处理展示数据，订单不改。",
+        "evidence": [
+          {
+            "source_id": "D00002",
+            "quote": "详情缓存仅处理展示数据，订单不改。",
+            "file": "dialogue.md",
+            "line": 2,
+            "message": 1
+          },
+          {
+            "source_id": "A00002",
+            "quote": "详情缓存仅处理展示数据，订单不改。",
+            "file": "artifact.md",
+            "line": 2,
+            "message": null
+          }
+        ]
+      },
+      "reason": {
+        "text": "未说明",
+        "evidence": []
+      },
+      "boundary": {
+        "text": "限于详情缓存。",
+        "evidence": [
+          {
+            "source_id": "D00002",
+            "quote": "详情缓存仅处理展示数据，订单不改。",
+            "file": "dialogue.md",
+            "line": 2,
+            "message": 1
+          },
+          {
+            "source_id": "A00002",
+            "quote": "详情缓存仅处理展示数据，订单不改。",
+            "file": "artifact.md",
+            "line": 2,
+            "message": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "K002",
+      "kind": "contract",
+      "conclusion": {
+        "text": "旧接口每批上限50条。",
+        "evidence": [
+          {
+            "source_id": "D00004",
+            "quote": "旧接口每批上限50条。",
+            "file": "dialogue.md",
+            "line": 4,
+            "message": 2
+          },
+          {
+            "source_id": "A00003",
+            "quote": "旧接口每批上限50条。",
+            "file": "artifact.md",
+            "line": 3,
+            "message": null
+          }
+        ]
+      },
+      "reason": {
+        "text": "未说明",
+        "evidence": []
+      },
+      "boundary": {
+        "text": "未说明",
+        "evidence": []
+      }
+    }
+  ],
+  "open_questions": [
+    {
+      "text": "为何50条尚未确认。",
+      "evidence": [
+        {
+          "source_id": "D00006",
+          "quote": "保持兼容；为何50条暂未确认。",
+          "file": "dialogue.md",
+          "line": 6,
+          "message": 3
+        }
+      ]
+    }
+  ],
+  "review_notes": [
+    "逐字段核对完整原文，保留明确未知。"
+  ],
+  "grounding_proof": {
+    "policy": "whole-line-grounded-v1",
+    "policy_digest": "f71cb93a94b39ae3eed50f498fa4f37e6ac4f201cad81d34924f8b91777d0050",
+    "status": "model_supported",
+    "field_checks": [
+      {
+        "item_index": 1,
+        "field": "conclusion",
+        "status": "supported",
+        "notes": "核对自身引文。"
+      },
+      {
+        "item_index": 1,
+        "field": "reason",
+        "status": "unstated",
+        "notes": "核对自身引文。"
+      },
+      {
+        "item_index": 1,
+        "field": "boundary",
+        "status": "supported",
+        "notes": "核对自身引文。"
+      },
+      {
+        "item_index": 2,
+        "field": "conclusion",
+        "status": "supported",
+        "notes": "核对自身引文。"
+      },
+      {
+        "item_index": 2,
+        "field": "reason",
+        "status": "unstated",
+        "notes": "核对自身引文。"
+      },
+      {
+        "item_index": 2,
+        "field": "boundary",
+        "status": "unstated",
+        "notes": "核对自身引文。"
+      }
+    ],
+    "literal_bindings": {
+      "policy": "source-symbols-v1",
+      "policy_digest": "c941e2bd482e13466907bdc515dc638846fa2e3b8321dfaa568556b31c203eca",
+      "input_digest": "e3d01f0166efcf535a21928b8a6df1e62d9266919e505a9fb62c312e54382d90",
+      "fields": [
+        {
+          "knowledge_key": "K001",
+          "field": "conclusion",
+          "symbols": []
+        },
+        {
+          "knowledge_key": "K001",
+          "field": "reason",
+          "symbols": []
+        },
+        {
+          "knowledge_key": "K001",
+          "field": "boundary",
+          "symbols": []
+        },
+        {
+          "knowledge_key": "K002",
+          "field": "conclusion",
+          "symbols": []
+        },
+        {
+          "knowledge_key": "K002",
+          "field": "reason",
+          "symbols": []
+        },
+        {
+          "knowledge_key": "K002",
+          "field": "boundary",
+          "symbols": []
+        }
+      ]
+    },
+    "input_digest": "2a65351237f426255ecbedf3060f777c7195f8cf75884a519afcf39cb94a0fc5"
+  },
+  "schema_version": 5,
+  "extraction_protocol": "whole-line-grounded-v1",
+  "input_scope": "stage",
+  "scope": "stage",
+  "nodes": [],
+  "sample_id": "FAKE",
+  "stage": "design",
+  "mode": "grounded",
+  "input_fingerprint": "d750443bd493d4f56d45742d590ca45d504fb8177ff70c08d6ddefc29453ac5d",
+  "input_file_hashes": {
+    "dialogue.md": "b5aec368a45b9df8549a3bae9a80d1b41e67e120992b40346fa6a6bb13309f2c",
+    "artifact.md": "b4bdd0ad07d8eb59c9006294928301c5799949d8aba7a2a4ce991375759701c6"
+  },
+  "prompt_hash": "c635f1d36f8d701806ba1a2a7f4b9f336ec155ade27081b939e2c817514bbfb6",
+  "source_columns": [
+    "source_id",
+    "node_id",
+    "node_order",
+    "file",
+    "line",
+    "role",
+    "message",
+    "text"
+  ],
+  "requested_config": {
+    "endpoint": "https://example.invalid/chat/completions",
+    "model": "fixture",
+    "api_key_env": "",
+    "headers_env": {},
+    "timeout": 180,
+    "retries": 2,
+    "max_tokens": 12000,
+    "max_input_chars": 120000,
+    "json_mode": false,
+    "temperature": null,
+    "input_price_per_million": null,
+    "output_price_per_million": null,
+    "cost_unit": "CNY"
+  },
+  "run_signature": "011e3bfbb18deb8793621195f773f8203cc4d28be7e7aedb89f6e13fd3b59c4e",
+  "version": "0.4.0",
+  "model": "fixture",
+  "metrics": {
+    "calls": 0
+  },
+  "calls": [],
+  "fixture_note": "Fictional offline v1 compatibility fixture; no model was called.",
+  "result_digest": "fcb2cb23a1b4612f04470f4a586f14e00506fdbfed28f8c3491e779661767a28"
+}

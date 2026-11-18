@@ -35,7 +35,11 @@ def task_packet(op, stage, payload, request):
     if digest(payload) != identity['input_version']:
         raise ValueError('Docs 任务输入与原始 input_version 不匹配')
     if 'prediction_digest' in identity:
-        if stage == 'requirement':
+        prediction = payload.get('prediction')
+        legacy_requirement = ('nodes' in payload and isinstance(prediction, dict)
+                              and prediction.get('stage') == 'requirement'
+                              and prediction.get('scope') != 'requirement')
+        if stage == 'requirement' and not legacy_requirement:
             from .comparison import verify_scoring_views
             verify_scoring_views(payload, identity['prediction_digest'])
         elif digest(payload.get('prediction')) != identity['prediction_digest']:

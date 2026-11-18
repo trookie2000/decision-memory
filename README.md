@@ -1,6 +1,6 @@
 # Decision Memory
 
-面向命题 07 的本地 CLI。按阶段或完整需求的有序节点，输出当前有效决策、理由、适用边界、未决事项及逐字段原文证据。grounded 输出最终知识快照，原事件模式另保留更新和失效历史。
+面向命题 07 的本地 CLI。数据集提取默认读取完整需求的有序节点和补充 Markdown。评委可显式选择单阶段或完整需求，输出有效决策、理由、适用边界、未决事项及逐字段证据。grounded 生成最终知识快照，事件模式保留更新和失效历史。
 
 Python 3.11+。运行时仅使用标准库。评委 `run` 生成 JSON、Markdown、HTML 和调用回执，可供人工核查或下一阶段 Agent 读取。
 
@@ -8,12 +8,19 @@ Python 3.11+。运行时仅使用标准库。评委 `run` 生成 JSON、Markdown
 一次生成 JSON、Markdown、HTML 和真实调用回执；点击 HTML 来源可查看原文。完整需求改用 `--scope requirement`。
 配置、失败处理和报告说明见 [评委本地运行](docs/judge-run.md)。运行报告只记录实际执行，质量在固定输出后独立判卷。
 
-2026-11-18：346 项测试通过。最新两个完整需求的本地自测为严格覆盖 24/32（75%）、条目准确 24/26（92.31%）、固定十条来源抽查 10/10，达到本地三门槛。它使用明确提供的全部节点，不能当作正式单阶段成绩；人工确认仍待完成。另一份解释材料的迁移检查未通过，不宣称泛化已解决。
+实验版本 `941ff4f` 的两个完整需求合计严格覆盖 24/32（75%）、条目准确 24/26（92.31%）、固定十条来源抽查 10/10，达到本地三门槛。另一份解释材料的迁移检查未通过。合并后的输入协议和提示需要重新做真实模型验收，正式单阶段判卷和人工确认仍待完成。
 
 这次来源补充的成对实验保持正文和模型调用不变，严格覆盖从 23/32 提高到 24/32，未使既有条目的引用支持退化。早先单独判卷的 22/32 原件保留，不能把判卷差异都算成工程收益。各版本、消融、失败和完整成本见 [grounded 自测](docs/grounded-evaluation.md)，提交差距及后续优先级见 [提交前验收](docs/submission-readiness.md)。
 
 ## 历史接口与实验记录
 
+2026-11-17 补充材料整合（工程 0.4.2）：事件策略也默认读取需求目录中的额外 Markdown，显式清单可通过 `supplements` 声明。背景事件不编造节点，只允许新增无冲突事实、合并证据或补齐未说明字段，不能据此改写已确认内容。默认提取与两版可选审计均接入材料身份和保存校验。含全局补充文件的整需求/逐节点 `compare` 暂在调用前拒绝，避免两侧使用不同材料。全量 376 项测试及 157 份历史文件只读审计通过，没有真实模型新分数；详见 [完整需求说明](docs/requirement-memory.md#无节点补充材料的事件)。
+
+2026-11-17 输入修复（工程 0.4.1）：grounded 现在通过共用输入描述识别目录、ZIP、显式清单和单阶段，保留真实节点与补充材料类型；两条数据集 grounded 命令读取相同目录时发送相同材料。新增 grounded 逐字来源协议 v2，v1 结果仍可离线校验，不能直接复用为新版本运行。此处的 grounded 协议 v2 与实验开关 `--evidence-audit v2` 是两个不同协议。全量 351 项测试通过，本轮没有真实模型新分数。
+
+2026-11-17 合并更新：保留目录式需求输入及显式清单、记忆事件、按需证据审计两条流程，兼容旧四文件员工回传与新匿名 A/B 评分。整合后 338 项自动测试通过；G002～G004 的 157 份历史文件重新通过只读审计。此结果证明工程兼容性，不代表合并版本已有真实模型新分数。
+
+2026-11-17，工程版本 0.4.0 增加材料类型与阶段顺序分离、跨节点失效检查、可重放决策历史和程序核查队列。数据集入口默认按需求合并，旧单阶段用法需显式传 `--unit stage`。实现范围、验证和尚未完成的优化见 [输入与状态改造记录](docs/input-state-upgrade.md)。本轮尚未运行真实模型或新增独立评分，历史分数不能视为新版本成绩。
 新增 `requirement inspect/extract/validate/compare`，可通过清单读取分析、设计、编码等节点，或组合现有数据集中的分析与设计材料。需求级 `verified` 正常调用 2 次模型；旧阶段流程保持原行为。整需求协调器已接入原员工出题与 v2 分轨评分，批次先冻结所有题目，再比较整需求与逐节点方法。工程验证与真实模型效果分别记录，操作说明见 [完整需求提取](docs/requirement-memory.md) 和 [整需求六例对照](docs/coordinator.md#整需求的六例对照)。
 
 2026-11-17 新增主动开启的 `--evidence-audit v2`：来源编号由程序展开，复核前提供字段线索，并校验字段自身引文中的实现符号。297 项自动回归通过。有限真实对照中，v2 的 3 个任务尚无正式发布结果，继续保留为实验功能，默认流程不变。独立判卷、失败及用量见 [v2 验收记录](docs/evidence-audit-v2-evaluation.md)。
@@ -50,7 +57,7 @@ uv pip install --python .venv/bin/python -e .
 .venv/bin/decision-memory --help
 ```
 
-本机已将题面附件保存到 `data/public-samples.zip`，该目录被 Git 忽略。其他机器可从命题文档下载同名自测 ZIP，或传入解压后的目录。程序识别每个需求下 `上下文/需求确认记录.md` 与 `产物/需求分析.md`，以及 `上下文/技术设计确认记录.md` 与 `产物/技术方案.md`。每对文件形成一条输入。题面附件请从内部材料获取。
+本机已将题面附件保存到 `data/public-samples.zip`，该目录被 Git 忽略。其他机器可从命题文档下载自测 ZIP，或传入解压目录。默认每个需求形成一条输入；读取其 `上下文/` 与 `产物/` 下所有 Markdown 文件，并跳过评测标注目录。已知的需求分析和技术设计文件建立阶段顺序，额外文件标为补充材料且 `node=null`，包括放在产物目录的额外文件。未知文件不根据名称或编号推断时间。单阶段模式仅读取对应的已知文件对。
 
 ## 配置模型网关
 
@@ -95,6 +102,7 @@ python3 -m decision_memory requirement inspect \
 
 ```bash
 .venv/bin/decision-memory extract --dataset data/public-samples.zip \
+  --unit stage \
   --sample-id REQ-20261012-auction-heat-analysis \
   --config config.local.toml --mode baseline --output runs/official-one/result.json
 ```
@@ -111,7 +119,7 @@ python3 -m decision_memory extract \
   --output runs/example/result.json
 ```
 
-批量处理官方格式样本。
+批量处理官方格式样本，每个需求输出一份结果。旧阶段批次使用 `--unit stage`，已保存结果的 `validate` 会按结果中的阶段类型自动选择输入。
 
 ```bash
 python3 -m decision_memory batch --dataset data/public-samples.zip \
@@ -124,9 +132,9 @@ python3 -m decision_memory batch --dataset data/public-samples.zip \
 
 | 模式 | 输入及处理 | 常规模型调用数 |
 |---|---|---:|
-| baseline | 当前阶段对话与最终产物，一次生成条目 | 1 |
+| baseline | 需求全部材料，一次生成条目 | 1 |
 | verified | 识别决策变化、生成条目、全文复核 | 3 |
-| artifact-only | 只向模型提供最终产物 | 1 |
+| artifact-only | 只提供产物目录材料，额外文件仍标为 supplement | 1 |
 
 旧接口每个步骤的格式或引用错误最多修复一次。未显式配置的旧客户端缺省为两次 HTTP 重试、180 秒、120,000 输入字符和 12,000 输出 token；复制的新模板使用上一节的建议值。新 `run` 及 grounded 无论配置如何都关闭 HTTP 自动重试。长材料超过配置上限时明确失败，不静默截断；可调整获准配置或按真实输入范围拆分。
 
@@ -135,6 +143,10 @@ python3 -m decision_memory batch --dataset data/public-samples.zip \
 每条结果包含 `conclusion`、`reason`、`boundary` 三个字段，每个字段有 `text` 和 `evidence`。证据包含原文编号、逐字引文、源文件、行号和对话消息编号。理由或边界无依据时为“未说明”。`open_questions` 单独记录未决事项。
 
 verified 模式还输出 `decisions`，保留 `active`、`superseded`、`pending`、`conflict` 状态。`review_notes` 记录模型复核意见。`checks` 区分逐字引用校验、模型复核和人工评审。引用存在性校验与语义支持度需要分别核对。
+
+需求级 verified 结果还包含 `input_documents`、`decision_history` 和 `review_queue`。后续明确决定可以替换早期产物；代码仅在同议题、同适用范围且有后续用户/阶段产物依据时执行失效处理，保留原记录与替换依据。材料冲突或未经证实的替换进入程序核查队列，`checks.requires_review=true`；原文明示且尚未解决的业务待定事项才属于 `open_questions`。语义议题归并仍由模型完成，尚未实现独立字段验证器或完整记忆库。
+
+grounded 为最终知识快照策略，两次正常模型调用，使用 `--mode grounded` 显式开启。顶层 `extract --dataset` 和 `requirement extract --dataset` 均读取完整需求目录及额外 Markdown；清单使用 `requirement extract --manifest`，读取明确列出的节点对及 `supplements`。结果记录 `input_contract`，绑定范围、节点、材料类型和原始来源编号；它不输出事件历史。`requirement inspect --dataset ... --mode grounded` 可离线核对该策略实际输入。完整用法与边界见 [需求输入说明](docs/requirement-memory.md#grounded-最终快照输入)。
 
 单样本成功后原子写入 JSON，并生成 Markdown。批量运行在 `summary.json` 逐条记录成功、失败和复用情况，单条失败后继续处理其余样本，任一失败时退出码为 2。每个样本的 `metrics` 保留调用数、HTTP 尝试数、耗时和 token 用量。网关未返回用量时保留 `null`。
 

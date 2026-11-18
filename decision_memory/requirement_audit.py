@@ -62,7 +62,7 @@ def build_coverage_catalog(sample, policy=POLICY):
             quote = match.group().strip()
             if not quote:
                 continue
-            if source.role != 'artifact' and not (
+            if source.document_type != 'supplement' and source.role != 'artifact' and not (
                     source.role in ('user', None) and any(marker in quote for marker in MARKERS)):
                 continue
             start = match.start() + len(match.group()) - len(match.group().lstrip())
@@ -127,24 +127,32 @@ def _admissions(value, items, sample):
         key = _text(row['knowledge_key'], 'knowledge_key')
         if key not in items or key in indexed:
             raise ValueError('准入必须唯一关联当前知识')
-        basis = _choice(row['basis'], ('user_direct', 'artifact_direct', 'confirmed_proposal', 'needs_review'), '准入路径')
+        basis = _choice(row['basis'], ('user_direct', 'artifact_direct', 'confirmed_proposal', 'supplement_direct', 'needs_review'), '准入路径')
         _text(row['notes'], '准入说明')
         allowed = {_identity(r) for r in items[key]['conclusion']['evidence']}
         anchors = {name: _references(row[name], sample, allowed) for name in ('direct', 'proposal', 'confirmation')}
         direct, proposal, confirmation = (anchors[name] for name in ('direct', 'proposal', 'confirmation'))
         if basis in ('user_direct', 'artifact_direct'):
             role = 'user' if basis == 'user_direct' else 'artifact'
-            if not direct or proposal or confirmation or any(r['role'] != role for r in direct):
+            document_type = 'dialogue' if role == 'user' else 'artifact'
+            if not direct or proposal or confirmation or any(r['role'] != role or
+                    sample.catalog[r['source_id']].document_type != document_type for r in direct):
                 raise ValueError('直接准入需要对应真实角色的当前结论证据')
             if role == 'user' and any(re.sub(r'[\W_]+', '', ROLE.sub('', r['quote'])) in AFFIRMATIONS for r in direct):
                 raise ValueError('短确认不能单独充当直接规则，请关联 Agent 提议')
         if basis == 'confirmed_proposal':
             if (direct or not proposal or not confirmation or any(r['role'] != 'agent' for r in proposal)
-                    or any(r['role'] != 'user' for r in confirmation)):
+                    or any(r['role'] != 'user' for r in confirmation)
+                    or any(sample.catalog[r['source_id']].document_type != 'dialogue' for r in proposal + confirmation)):
                 raise ValueError('确认提议需要 Agent 提议和用户确认的双重证据')
             position = lambda r: (sample.node_order(r['source_id']), r['line'])
             if min(map(position, confirmation)) <= max(map(position, proposal)):
                 raise ValueError('用户确认必须晚于所引用的全部提议')
+        if basis == 'supplement_direct':
+            if (not direct or proposal or confirmation or any(
+                    sample.catalog[ref['source_id']].document_type != 'supplement'
+                    for ref in items[key]['conclusion']['evidence'])):
+                raise ValueError('补充事实准入只能依赖补充材料，不能冒充正式确认')
         normalized = {**row, **anchors}
         rows.append(normalized)
         indexed[key] = normalized
@@ -166,7 +174,7 @@ def _attributions(value, items, sample):
             raise ValueError('用户归因清单包含未知或重复字段')
         _text(row['notes'], '用户归因说明')
         refs = _references(row['evidence'], sample, {_identity(r) for r in items[key][field]['evidence']})
-        if not refs or any(r['role'] != 'user' for r in refs):
+        if not refs or any(r['role'] != 'user' or sample.catalog[r['source_id']].document_type != 'dialogue' for r in refs):
             raise ValueError('用户归因需要该字段的实际用户证据')
         rows.append({**row, 'evidence': refs})
         seen.add(identity)

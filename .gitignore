@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 .idea/
 .ruff_cache/
+.docs-cli/
 *.egg-info/
 build/
 dist/

@@ -31,7 +31,8 @@ def build_review_hints(result, sample):
     indexed = [(key, source, terms(source.text)) for key, source in sample.catalog.items()]
     frequency = Counter(term for _, _, words in indexed for term in words)
     fields, cited = [], set()
-    positions = {key: index for index, (key, _, _) in enumerate(indexed)}
+    positions = {key: index for index, (key, source, _) in enumerate(indexed)
+                 if source.document_type != 'supplement'}
     for index, item in enumerate(result['items'], 1):
         for name in ('conclusion', 'reason', 'boundary'):
             field = item[name]
@@ -58,9 +59,10 @@ def build_review_hints(result, sample):
                 if score > 0:
                     ranked.append((-score, key))
             anchors = current or {ref['source_id'] for ref in item['conclusion']['evidence']}
-            earliest = min((positions[key] for key in anchors), default=-1)
+            earliest = min((positions[key] for key in anchors if key in positions), default=None)
             later = [(score, -positions[key], key) for score, key in ranked
-                     if positions[key] > earliest and FINALITY.search(sample.catalog[key].text)]
+                     if earliest is not None and key in positions and positions[key] > earliest
+                     and FINALITY.search(sample.catalog[key].text)]
             fields.append({'item_index': index, 'field': name, 'missing_symbols': missing,
                            'missing_atoms': [{'text': atom['text'], 'candidate_source_ids': [key for key, source, _ in indexed if present(atom, source.text)][:6]}
                                              for atom in absent_atoms],
@@ -72,15 +74,17 @@ def build_review_hints(result, sample):
     for index, question in enumerate(result['open_questions'], 1):
         cited.update(ref['source_id'] for ref in question['evidence'])
         wanted = terms(question['text'])
-        earliest = min((positions[ref['source_id']] for ref in question['evidence']), default=-1)
+        earliest = min((positions[ref['source_id']] for ref in question['evidence']
+                        if ref['source_id'] in positions), default=None)
         ranked = []
         for key, source, words in indexed:
             overlap = sum(math.log1p(len(indexed) / (1 + frequency[t])) for t in wanted & words)
-            if overlap and positions[key] > earliest:
+            if overlap and earliest is not None and key in positions and positions[key] > earliest:
                 ranked.append((-overlap / math.sqrt(max(1, len(words))), -positions[key], key))
         questions.append({'question_index': index,
                           'later_related_source_ids': [key for _, _, key in sorted(ranked)[:HINT_POLICY['per_field']]]})
-    salient = [key for key, source, _ in indexed if key.startswith('A') and key not in cited and SALIENT.search(source.text)]
+    salient = [key for key, source, _ in indexed if source.document_type == 'artifact'
+               and key not in cited and SALIENT.search(source.text)]
     return {'policy': HINT_POLICY['policy'], 'semantic_certification': False, 'fields': fields, 'questions': questions,
             'unreferenced_artifact_candidates': salient[:HINT_POLICY['artifact_candidates']],
             'unreferenced_salient_total': len(salient), 'full_source_count': len(indexed)}

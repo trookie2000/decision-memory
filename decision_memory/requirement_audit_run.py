@@ -13,6 +13,7 @@ from .requirement_grounding import reason_obligations, validate_grounding_review
 from .requirement_memory import compile_memory
 from .requirement_pipeline import EXTRACT, REVIEW, requirement_result
 from .storage import write_json, write_text
+from .requirements import supplement_hash, supplement_prompt
 
 AUDIT_INSTRUCTIONS = '''
 本轮开启 evidence-v1 证据准入和候选覆盖核查。复用本次复核，不请求其他模型。
@@ -184,9 +185,9 @@ def extract_audited_requirement(sample, client, run_dir):
     client.config = replace(requested, retries=0)
     run = None
     try:
-        run = AuditRun(run_dir, sample, client, requested.public())
+        run = AuditRun(run_dir, sample, client, requested.public(), prompt_hash=supplement_hash(AUDIT_PROMPT_HASH, sample))
         sources = sample.prompt_text()
-        first = run.checked(1, 'extract', EXTRACT, sources, lambda p: compile_memory(p, sample))
+        first = run.checked(1, 'extract', supplement_prompt(EXTRACT, sample), sources, lambda p: compile_memory(p, sample))
         user = sources + '\n候选事件流 ' + json.dumps(
             {'events': first['events'], 'open_questions': first['open_questions']}, ensure_ascii=False)
         user += '\nexplicit_reason_unknowns ' + json.dumps(reason_obligations(sample), ensure_ascii=False)
@@ -202,7 +203,7 @@ def extract_audited_requirement(sample, client, run_dir):
             audit = validate_evidence_audit(payload.get('evidence_audit'), compiled, proof, sample)
             return compiled, proof, audit
 
-        compiled, proof, audit = run.checked(2, 'review', REVIEW + AUDIT_INSTRUCTIONS, user, reviewed)
+        compiled, proof, audit = run.checked(2, 'review', supplement_prompt(REVIEW + AUDIT_INSTRUCTIONS, sample), user, reviewed)
         result = requirement_result(sample, client, 'verified', compiled, proof, audit)
         if audit['audit_status'] == 'needs_review':
             write_json(run.path / 'draft.json', result)

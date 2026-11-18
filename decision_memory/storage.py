@@ -45,7 +45,7 @@ def result_digest(result):
 
 def validate_saved(result, sample, client=None, mode=None):
     if isinstance(result, dict) and (result.get('schema_version') == 5 or result.get('mode') == 'grounded'
-                                    or result.get('extraction_protocol') == 'whole-line-grounded-v1'):
+                                    or result.get('extraction_protocol') in ('whole-line-grounded-v1', 'whole-line-grounded-v2')):
         from .grounded import validate_grounded_saved
         return validate_grounded_saved(result, sample, client, mode)
     from .requirements import RequirementSample
@@ -68,12 +68,38 @@ def validate_saved(result, sample, client=None, mode=None):
     validated = validate_result(result, context)
     if result.get('items') != validated['items'] or result.get('open_questions') != validated['open_questions']:
         raise ValueError('结果的来源位置或编号与原文不一致')
-    validate_decisions({'decisions': result.get('decisions')}, context)
+    decisions = validate_decisions({'decisions': result.get('decisions')}, context)
+    if result['decisions'] != decisions:
+        raise ValueError('决策轨迹的来源位置与原文不一致')
+    if 'input_documents' in result and result['input_documents'] != sample.documents():
+        raise ValueError('材料类型或节点元数据与输入不一致')
+    if 'decision_history' in result:
+        from .memory import reconcile
+        history, _ = reconcile({'items': [], 'open_questions': []}, decisions, context)
+        if result['decision_history'] != history['decision_history']:
+            raise ValueError('决策历史的引用、节点或状态转移与原文不一致')
+        queue = result.get('review_queue')
+        if not isinstance(queue, list):
+            raise ValueError('程序核查队列必须为数组')
+        candidates = []
+        for entry in queue:
+            if not isinstance(entry, dict):
+                raise ValueError('程序核查记录必须为对象')
+            if entry.get('kind') == 'candidate_requires_review':
+                candidate = entry.get('item')
+                normalized = validate_result({'items': [candidate], 'open_questions': []}, context)['items'][0]
+                if any(candidate.get(key) != value for key, value in normalized.items() if key != 'id'):
+                    raise ValueError('核查候选的引用位置与原文不一致')
+                candidates.append(candidate)
+        replay, _ = reconcile({'items': candidates, 'open_questions': []}, decisions, context)
+        if queue != replay['review_queue']:
+            raise ValueError('程序核查队列与决策轨迹不一致')
     return result
 
 
 def render_markdown(result):
-    title = '需求知识' if result.get('scope') == 'requirement' else '阶段交接'
+    title = ('需求知识' if result.get('scope') == 'requirement' else
+             '需求交接' if result.get('stage') == 'requirement' else '阶段交接')
     lines = [f'# {title} {result["sample_id"]}', '',
              f'模式 `{result["mode"]}`。模型 `{result["model"]}`。', '',
              '引用已通过程序逐字核对。条目语义和覆盖范围仍需人工评审。', '']
@@ -104,11 +130,31 @@ def render_markdown(result):
                 label = ' · 程序补充的流程标题' if evidence['source_id'] in question.get('evidence_context', {}).get('added_source_ids', []) else ''
                 lines.append(f'  - `{evidence["source_id"]}` · {evidence["file"]} 第 {evidence["line"]} 行{label} · {evidence["quote"]}')
         lines.append('')
+    if result.get('decision_history'):
+        lines.extend(['## 决策历史', '', '以下内容已被后续决定替换或解决，不属于现行知识。', ''])
+        for history in result['decision_history']:
+            lines.extend([f'### {history["id"]} · {history["topic"]} · {history["status"]}', '',
+                          f'适用范围：{history["scope"]}。解决节点：{history["resolved_at_node"]}。', '',
+                          history['text'], '', f'原因：{history["reason"]["text"]}', ''])
+            for label, references in (('原记录', history['evidence']), ('后续依据', history['resolution_evidence']),
+                                      ('原因依据', history['reason']['evidence'])):
+                for evidence in references:
+                    lines.append(f'- {label} `{evidence["source_id"]}` · {evidence["file"]} 第 {evidence["line"]} 行 · {evidence["quote"]}')
+            lines.append('')
+    if result.get('review_queue'):
+        lines.extend(['## 程序核查队列', '', '这些是程序发现的疑点，不代表原文明确提出的业务待定事项。', ''])
+        for entry in result['review_queue']:
+            text = entry['item']['conclusion']['text'] if 'item' in entry else entry['text']
+            references = entry['item']['conclusion']['evidence'] if 'item' in entry else entry['evidence']
+            lines.extend([f'- [{entry["kind"]}] {text} — {entry["reason"]}'])
+            for evidence in references:
+                lines.append(f'  - `{evidence["source_id"]}` · {evidence["file"]} 第 {evidence["line"]} 行 · {evidence["quote"]}')
+        lines.append('')
     if result.get('scope') == 'requirement' and result.get('schema_version') != 5:
         lines.extend(['## 变更历史', '', '已失效或已替换的历史版本不作为现行知识。', ''])
         for event in result['history']:
             lines.extend([f'### {event["id"]} · {event["operation"]} · {event["status"]}', '',
-                          f'知识 `{event["knowledge_key"]}`，节点 `{event["node_id"]}`，版本 {event["version"]}。', ''])
+                          f'知识 `{event["knowledge_key"]}`，节点 `{event["node_id"] if event["node_id"] is not None else "未提供（补充材料）"}`，版本 {event["version"]}。', ''])
             if 'item' in event:
                 for name, label in (('conclusion', '结论'), ('reason', '理由'), ('boundary', '边界')):
                     lines.extend([f'{label}：{event["item"][name]["text"]}', ''])

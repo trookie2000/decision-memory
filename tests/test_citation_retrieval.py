@@ -11,7 +11,9 @@ from pathlib import Path
 from decision_memory.citation_retrieval import RETRIEVAL_POLICY, augment_evidence
 from decision_memory.client import Config, ModelClient
 from decision_memory.evaluation import digest
-from decision_memory.grounded import decode_payload, extract_grounded, review_payload, signature
+from decision_memory.grounded import (
+    LEGACY_PROTOCOL, V1_LOCAL_POLICY, V1_LOCAL_PROMPT, decode_payload, extract_grounded, review_payload, signature,
+)
 from decision_memory.run_report import render_result_html
 from decision_memory.sources import index_materials
 from decision_memory.storage import read_json, render_markdown, result_digest, save_result, validate_saved
@@ -69,8 +71,13 @@ class CitationRetrievalTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     validate_saved(changed, sample())
 
-            legacy = {**result, **review_payload(final_payload(), sample(), include_retrieval=False)}
-            legacy['run_signature'] = signature(sample(), legacy['requested_config'], include_retrieval=False)
+            legacy = {**result, **review_payload(final_payload(), sample(), include_retrieval=False,
+                                                 policy=V1_LOCAL_POLICY)}
+            legacy.pop('input_contract')
+            legacy.update(extraction_protocol=LEGACY_PROTOCOL, version='0.2.0', prompt_hash=V1_LOCAL_PROMPT,
+                          source_columns=list(V1_LOCAL_POLICY['columns']))
+            legacy['run_signature'] = signature(sample(), legacy['requested_config'], include_retrieval=False,
+                                                protocol=LEGACY_PROTOCOL, version='0.2.0', prompt=V1_LOCAL_PROMPT)
             legacy['result_digest'] = result_digest(legacy)
             validate_saved(legacy, sample())
 

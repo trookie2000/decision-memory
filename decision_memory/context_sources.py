@@ -18,7 +18,7 @@ def flow_context(sample):
     groups, mapping = {}, {}
     for key, source in sample.catalog.items():
         if source.role == 'artifact':
-            namespace = key.rsplit('.', 1)[0] if '.' in key else key[:1]
+            namespace = key.rsplit('.', 1)[0] if '.' in key else source.node
             groups.setdefault((namespace, source.file), []).append((key, source))
     for (_, filename), rows in groups.items():
         opening, fence, block, eligible = None, None, [], False

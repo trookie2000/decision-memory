@@ -15,7 +15,6 @@ from .collaboration import BattleConfig, DocsCLI, MarioMCP, TransportError
 from .coordinator import BATTLE_STAGES, Battle, PAUSED, file_digest, run_lock
 from .evaluation import digest
 from .pipeline import MODES
-from .sources import STAGES
 from .storage import read_json, write_json, write_text
 
 

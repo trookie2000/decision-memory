@@ -9,9 +9,9 @@ from pathlib import Path
 from . import __version__
 from .client import ModelClient, ModelError, ModelOutputError
 from .evaluation import digest
-from .grounded import GroundedNeedsReview, extract_grounded, source_packet
+from .grounded import GroundedNeedsReview, extract_grounded
 from .pipeline import STAGE_MODES, extract, first_request
-from .requirements import RequirementSample, assemble_requirement, discover_requirements, read_requirement_manifest
+from .requirements import RequirementSample, discover_requirements, load_requirement_manifest, read_requirement_manifest
 from .run_report import render_result_html, render_run_html, render_run_markdown
 from .sources import discover_samples
 from .storage import save_result, validate_saved, write_json, write_text
@@ -27,9 +27,9 @@ def load_run_samples(*, dataset=None, manifest=None, scope='stage', sample_id=No
     if manifest:
         if sample_id or requirement_id:
             raise ValueError('manifest 不同时接受数据集筛选编号')
-        identity, nodes = read_requirement_manifest(Path(manifest))
         if scope == 'requirement':
-            return [assemble_requirement(identity, nodes)]
+            return [load_requirement_manifest(Path(manifest))]
+        _, nodes = read_requirement_manifest(Path(manifest))
         return [sample for _, _, sample in nodes]
     if scope == 'requirement':
         if sample_id:
