@@ -79,9 +79,90 @@ def parser():
     official_score.add_argument('--scope', choices=('requirement', 'stage'), default='requirement')
     official_score.add_argument('--output', required=True, type=Path, help='新的评分输出目录')
     add_requirement_arguments(commands)
+    add_field_arguments(commands)
     add_battle_arguments(commands)
     add_series_arguments(commands)
     return root
+
+
+def add_field_arguments(commands):
+    command = commands.add_parser('field', help='原文独立回答、逐字段证据修订与冻结对照')
+    actions = command.add_subparsers(dest='field_command', required=True)
+    verify = actions.add_parser('verify')
+    source = verify.add_mutually_exclusive_group(required=True)
+    source.add_argument('--dataset', type=Path)
+    source.add_argument('--manifest', type=Path)
+    verify.add_argument('--result', required=True, type=Path)
+    verify.add_argument('--config', required=True, type=Path)
+    verify.add_argument('--output', required=True, type=Path)
+    frozen = actions.add_parser('freeze', help='冻结原预测、ZIP、参考、模型配置和源码，尚不调用模型')
+    frozen.add_argument('--dataset', required=True, type=Path)
+    frozen.add_argument('--predictions', required=True, type=Path)
+    frozen.add_argument('--config', required=True, type=Path)
+    frozen.add_argument('--judge-config', required=True, type=Path)
+    frozen.add_argument('--output', required=True, type=Path)
+    frozen.add_argument('--max-cases', type=int, default=2)
+    frozen.add_argument('--max-calls', type=int, default=14)
+    frozen.add_argument('--max-seconds', type=int, default=3600)
+    for action in ('run', 'status'):
+        leaf = actions.add_parser(action)
+        leaf.add_argument('--output', required=True, type=Path)
+        if action == 'run':
+            leaf.add_argument('--env-file', type=Path, help='仅读取模型凭证变量的字面赋值，不执行文件内容')
+
+
+def result_sample(result, *, dataset=None, manifest=None):
+    from .input_contract import describe_input
+    from .requirements import discover_requirements as event_requirements, load_requirement_manifest
+    if manifest:
+        sample = load_requirement_manifest(manifest)
+    else:
+        fmt = (result.get('input_contract') or {}).get('source_format')
+        if fmt == 'manifest' or (result.get('scope') == 'requirement' and fmt is None):
+            samples = event_requirements(dataset, result['sample_id'], include_supplements=fmt is not None)
+        else:
+            samples = (discover_requirements(dataset, sample_id=result['sample_id']) if result['stage'] == 'requirement'
+                       else discover_samples(dataset, sample_id=result['sample_id']))
+        if len(samples) != 1:
+            raise ValueError('未找到原结果对应的唯一输入')
+        sample = samples[0]
+    if result.get('schema_version') == 6 and result.get('input_contract') != describe_input(sample):
+        raise ValueError('独立字段快照的输入契约与材料不符')
+    validate_saved(result, sample)
+    return sample
+
+
+def run_field(args):
+    from .field_verification import verify_fields
+    if args.field_command == 'freeze':
+        from .field_experiment import freeze
+        plan = freeze(args.dataset, args.predictions, Config.load(args.config), Config.load(args.judge_config),
+                      args.output, max_cases=args.max_cases, max_calls=args.max_calls, max_seconds=args.max_seconds)
+        return {'status': 'frozen', 'output': str(args.output), 'cases': len(plan['cases']),
+                'limits': plan['limits'], 'plan_digest': plan['plan_digest']}, 0
+    if args.field_command == 'status':
+        state = read_json(args.output / 'state.json')
+        return {'status': state['status'], 'cases': [{key: row.get(key) for key in
+            ('id', 'status', 'held_items', 'error')} for row in state.get('cases', [])]}, 0
+    if args.field_command == 'run':
+        from .field_experiment import check_freeze, load_credentials, run
+        if args.env_file:
+            plan = check_freeze(args.output)
+            load_credentials(args.env_file, [Config(**plan['config']), Config(**plan['judge_config'])])
+        summary = run(args.output)
+        return {'output': str(args.output), 'complete_pairs': summary['complete_pairs'],
+                'total_cases': summary['total_cases'], 'all_case_deltas': summary['all_case_deltas'],
+                'improvement_demonstrated': summary['improvement_demonstrated'],
+                'new_calls': summary['new_calls'], 'human_review': 'pending'}, 0 if summary['complete_pairs'] == summary['total_cases'] else 2
+    if (args.output.suffix != '.json' or args.output.exists() or args.output.with_suffix('.md').exists()
+            or args.output.with_suffix('.run').exists()):
+        raise ValueError('字段结果及run目录须是尚不存在的新路径，失败或未知状态不得自动重发')
+    base = read_json(args.result)
+    sample = result_sample(base, dataset=args.dataset, manifest=args.manifest)
+    result = verify_fields(base, sample, ModelClient(Config.load(args.config)), args.output.with_suffix('.run'))
+    save_result(args.output, result, sample=sample)
+    return {'output': str(args.output), 'items': len(result['items']), 'held_items': len(result['field_review_queue']),
+            'verification_metrics': result['verification_metrics'], 'human_review': 'pending'}, 0
 
 
 def add_requirement_arguments(commands):
@@ -153,7 +234,7 @@ def run_requirement(args):
     sample = samples[0]
     if action == 'validate':
         validate_saved(saved, sample)
-        replay = 'snapshot_replay' if saved.get('mode') == 'grounded' else 'event_replay'
+        replay = 'snapshot_replay' if saved.get('mode') in ('grounded', 'field-verified') else 'event_replay'
         return {'requirement_id': sample.sample_id, 'exact_citations': 'passed', replay: 'passed',
                 'material_scope': 'declared_input_contract' if saved_contract is not None else 'legacy_declared_node_pairs',
                 'items': len(saved['items']), 'semantic_quality': 'requires_human_review'}, 0
@@ -393,6 +474,8 @@ def batch_extract(args):
 
 
 def run(args):
+    if args.command == 'field':
+        return run_field(args)
     if args.command == 'requirement':
         return run_requirement(args)
     if args.command == 'series':

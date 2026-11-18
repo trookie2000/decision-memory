@@ -44,6 +44,10 @@ def result_digest(result):
 
 
 def validate_saved(result, sample, client=None, mode=None):
+    if isinstance(result, dict) and (result.get('schema_version') == 6
+                                    or result.get('extraction_protocol') == 'independent-fields-v1'):
+        from .field_verification import validate_verified_saved
+        return validate_verified_saved(result, sample, client, mode)
     if isinstance(result, dict) and (result.get('schema_version') == 5 or result.get('mode') == 'grounded'
                                     or result.get('extraction_protocol') in ('whole-line-grounded-v1', 'whole-line-grounded-v2')):
         from .grounded import validate_grounded_saved
@@ -105,9 +109,10 @@ def render_markdown(result):
              '引用已通过程序逐字核对。条目语义和覆盖范围仍需人工评审。', '']
     if result.get('scope') == 'requirement':
         proof = result.get('grounding_review')
-        lines.extend(['字段支持复核：' + ('模型已逐字段复核，仍待人工确认。' if proof else '未执行结构化字段复核。'), ''])
+        lines.extend(['字段支持复核：' + ('独立原文回答及逐字段归因已完成，仍待人工确认。' if result.get('schema_version') == 6
+                      else '模型已逐字段复核，仍待人工确认。' if proof else '未执行结构化字段复核。'), ''])
         lines.extend(['节点顺序：' + ' → '.join(node['id'] + '（' + node['stage'] + '）' for node in result['nodes']),
-                      '', '以下条目为最终知识快照。' if result.get('schema_version') == 5 else '以下条目为当前知识，历史版本另列。', ''])
+                      '', '以下条目为最终知识快照。' if result.get('schema_version') in (5, 6) else '以下条目为当前知识，历史版本另列。', ''])
     for item in result['items']:
         lines.extend([f'## {item["id"]}', ''])
         for key, title in (('conclusion', '结论'), ('reason', '理由'), ('boundary', '适用边界')):
@@ -143,7 +148,18 @@ def render_markdown(result):
             for evidence in references:
                 lines.append(f'  - `{evidence["source_id"]}` · {evidence["file"]} 第 {evidence["line"]} 行 · {evidence["quote"]}')
         lines.append('')
-    if result.get('scope') == 'requirement' and result.get('schema_version') != 5:
+    if result.get('schema_version') == 6:
+        lines.extend(['## 独立字段修订', '', '原预测与原历史保存在 JSON 的 base_result，以下为派生快照，不改写原事件。', ''])
+        for row in result['verification']['field_checks']:
+            if row['action'] != 'keep':
+                lines.append(f'- `{row["item_id"]}.{row["field"]}` · {row["action"]} · {row["notes"]}')
+        lines.extend(['', '## 字段待复核', ''])
+        for entry in result['field_review_queue']:
+            lines.append('- `' + entry['item_id'] + '` · ' + entry['original']['conclusion']['text'])
+            for issue in entry['issues']:
+                lines.append('  - ' + issue['field'] + '：' + issue['notes'])
+        lines.append('')
+    if result.get('scope') == 'requirement' and result.get('schema_version') not in (5, 6):
         lines.extend(['## 变更历史', '', '已失效或已替换的历史版本不作为现行知识。', ''])
         for event in result['history']:
             lines.extend([f'### {event["id"]} · {event["operation"]} · {event["status"]}', '',
@@ -180,7 +196,7 @@ def save_result(path: Path, result, *, sample=None):
     markdown = path.with_suffix('.md')
     if path.exists() or markdown.exists():
         raise ValueError('输出已存在，请指定新的输出文件或使用 batch --resume')
-    if result.get('schema_version') == 5 or result.get('mode') == 'grounded':
+    if result.get('schema_version') in (5, 6) or result.get('mode') == 'grounded':
         if sample is None:
             raise ValueError('grounded 保存需要原始材料')
         result['result_digest'] = result_digest(result)

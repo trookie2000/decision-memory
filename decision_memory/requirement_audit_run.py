@@ -117,10 +117,10 @@ class AuditRun:
         self.state['wall_seconds'] = round(time.monotonic() - self.started, 3)
         write_json(self.path / 'state.json', self.state, overwrite=True)
 
-    def checked(self, number, name, system, user, validator):
+    def checked(self, number, name, system, user, validator, *, allow_repair=True):
         original = user
         required_markers = set()
-        for attempt in (1, 2):
+        for attempt in ((1, 2) if allow_repair else (1,)):
             filename = f'{number:02d}-{name}-{attempt}.json'
             step = {'step': name, 'attempt': attempt, 'status': 'started', 'provider_execution': 'unknown',
                     'response_file': filename, 'started_at': time.time(), 'call_numbers': []}
@@ -166,7 +166,7 @@ class AuditRun:
                 step['failure_phase'] = 'validation'
                 step['validation_error'] = str(error)[:600]
                 self.persist()
-                if attempt == 2:
+                if attempt == 2 or not allow_repair:
                     write_json(self.path / 'draft.json', {'validation': 'invalid', 'payload': payload})
                     raise
                 required_markers.update(_review_markers(payload))
