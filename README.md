@@ -14,6 +14,8 @@ Python 3.11+。运行时仅使用标准库。评委 `run` 生成 JSON、Markdown
 
 ## 历史接口与实验记录
 
+2026-11-17 字段证据改造（工程 0.4.3）：新增主动运行的 `field verify`，使用独立原文回答修订实际答案，保留原预测、证据重绑、理由/边界修订及待复核队列。新增 `field freeze/run/status`，冻结同材料的前后对照并匿名判卷。全量 411 项测试及 157 份历史文件只读审计通过；真实模型预检尚缺凭证，新增请求为 0，不能宣称提分。用法、来源、额外调用成本和验收约束见 [字段证据验证](docs/field-evidence-quality.md)。
+
 2026-11-17 补充材料整合（工程 0.4.2）：事件策略也默认读取需求目录中的额外 Markdown，显式清单可通过 `supplements` 声明。背景事件不编造节点，只允许新增无冲突事实、合并证据或补齐未说明字段，不能据此改写已确认内容。默认提取与两版可选审计均接入材料身份和保存校验。含全局补充文件的整需求/逐节点 `compare` 暂在调用前拒绝，避免两侧使用不同材料。全量 376 项测试及 157 份历史文件只读审计通过，没有真实模型新分数；详见 [完整需求说明](docs/requirement-memory.md#无节点补充材料的事件)。
 
 2026-11-17 输入修复（工程 0.4.1）：grounded 现在通过共用输入描述识别目录、ZIP、显式清单和单阶段，保留真实节点与补充材料类型；两条数据集 grounded 命令读取相同目录时发送相同材料。新增 grounded 逐字来源协议 v2，v1 结果仍可离线校验，不能直接复用为新版本运行。此处的 grounded 协议 v2 与实验开关 `--evidence-audit v2` 是两个不同协议。全量 351 项测试通过，本轮没有真实模型新分数。
@@ -144,7 +146,7 @@ python3 -m decision_memory batch --dataset data/public-samples.zip \
 
 verified 模式还输出 `decisions`，保留 `active`、`superseded`、`pending`、`conflict` 状态。`review_notes` 记录模型复核意见。`checks` 区分逐字引用校验、模型复核和人工评审。引用存在性校验与语义支持度需要分别核对。
 
-需求级 verified 结果还包含 `input_documents`、`decision_history` 和 `review_queue`。后续明确决定可以替换早期产物；代码仅在同议题、同适用范围且有后续用户/阶段产物依据时执行失效处理，保留原记录与替换依据。材料冲突或未经证实的替换进入程序核查队列，`checks.requires_review=true`；原文明示且尚未解决的业务待定事项才属于 `open_questions`。语义议题归并仍由模型完成，尚未实现独立字段验证器或完整记忆库。
+需求级 verified 结果还包含 `input_documents`、`decision_history` 和 `review_queue`。后续明确决定可以替换早期产物；代码仅在同议题、同适用范围且有后续用户/阶段产物依据时执行失效处理，保留原记录与替换依据。材料冲突或未经证实的替换进入程序核查队列，`checks.requires_review=true`；原文明示且尚未解决的业务待定事项才属于 `open_questions`。语义议题归并仍由模型完成。可另行运行 `field verify` 验证字段；默认提取未自动开启，完整跨需求记忆库仍未实现。
 
 grounded 为最终知识快照策略，两次正常模型调用，使用 `--mode grounded` 显式开启。顶层 `extract --dataset` 和 `requirement extract --dataset` 均读取完整需求目录及额外 Markdown；清单使用 `requirement extract --manifest`，读取明确列出的节点对及 `supplements`。结果记录 `input_contract`，绑定范围、节点、材料类型和原始来源编号；它不输出事件历史。`requirement inspect --dataset ... --mode grounded` 可离线核对该策略实际输入。完整用法与边界见 [需求输入说明](docs/requirement-memory.md#grounded-最终快照输入)。
 

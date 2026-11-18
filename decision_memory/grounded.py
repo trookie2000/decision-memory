@@ -46,6 +46,8 @@ PREVIOUS_RELEASES = {
     (LEGACY_PROTOCOL, '0.4.0', 'c635f1d36f8d701806ba1a2a7f4b9f336ec155ade27081b939e2c817514bbfb6'): V1_RELEASE_POLICY,
     (PROTOCOL, '0.4.1', V2_RELEASE_PROMPT): V2_RELEASE_POLICY,
     (PROTOCOL, '0.4.2', V2_RELEASE_PROMPT): V2_RELEASE_POLICY,
+    (PROTOCOL, '0.4.2', '5f893104c9603c4a5ac5dc9de1ddba9d7ed676b1b96615f3b1512c50ba3f6b66'): POLICY,
+    (PROTOCOL, '0.4.3', V2_RELEASE_PROMPT): V2_RELEASE_POLICY,
 }
 
 INSTRUCTIONS = '''你是研发知识提取器，只根据提供的对话与最终产物提取可复用知识。
@@ -350,7 +352,7 @@ def validate_grounded_saved(result, sample, client=None, mode=None):
         raise ValueError('grounded 缺少字段证明')
     include_context = 'context_policy_digest' in proof
     include_retrieval = 'citation_retrieval_policy_digest' in proof
-    if current and not (include_context and include_retrieval):
+    if policy is POLICY and not (include_context and include_retrieval):
         raise ValueError('grounded 缺少当前来源规则证明')
     if (policy is V1_RELEASE_POLICY or policy is V2_RELEASE_POLICY) and (include_context or include_retrieval):
         raise ValueError('旧 grounded 协议不能携带新来源规则证明')
