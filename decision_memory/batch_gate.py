@@ -15,8 +15,10 @@ IMPLEMENTATION_FILES = ('__init__.py', 'batch_gate.py', 'battle_protocol.py', 'c
 IMPLEMENTATION_FILES += ('evidence_spans.py', 'requirement_audit.py', 'requirement_audit_run.py',
                          'requirement_audit_report.py', 'input_contract.py', 'memory.py')
 IMPLEMENTATION_FILES += ('grounded.py', 'judge_run.py', 'run_report.py', 'field_grounding.py', 'evidence_ids.py', 'source_hints.py', 'context_sources.py')
-IMPLEMENTATION_FILES += ('grounded_atoms.py',)
+IMPLEMENTATION_FILES += ('grounded_atoms.py', 'scope_review.py', 'literal_repair.py',
+                         'deadline_relation.py', 'focused_review.py')
 IMPLEMENTATION_FILES += ('citation_retrieval.py', 'field_verification.py', 'field_experiment.py')
+IMPLEMENTATION_FILES += ('source_inventory.py',)
 
 
 def file_hash(path):

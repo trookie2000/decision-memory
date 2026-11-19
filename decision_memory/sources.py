@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import zipfile
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -19,6 +20,16 @@ REQUIREMENT = 'requirement'
 BATTLE_STAGES = ('analysis', 'design', REQUIREMENT)
 ROLE = re.compile(r'^\s*\*\*(AGENT|用户|assistant|user)\s*[:：]?\*\*', re.I)
 ROLE_NAMES = {'agent': 'agent', 'assistant': 'agent', '用户': 'user', 'user': 'user'}
+PLAIN_ROLE = re.compile(r'^[ \u3000]{0,3}(用户|助手|agent|assistant|user)[ \u3000]*[:：]', re.I | re.ASCII)
+PLAIN_ROLES = {**ROLE_NAMES, '助手': 'agent'}
+MARKDOWN_SPEAKERS = 'markdown-turns-v2'
+EARLY_PLAIN_SPEAKERS = 'markdown-and-plain-turns-v3'
+SPEAKER_POLICY = 'markdown-and-plain-turns-v4'
+NAMED_HEAD = re.compile(r'^\s*\*\*([^*]{1,48})\*\*(.*)$')
+TURN_TIME = re.compile(r'^\d{1,2}:\d{2}\s*[·・]\s*')
+SPEAKER_NAME = re.compile(r'([\w][\w .·-]{0,30})([（(][\w .·/-]{1,24}[）)])?')
+FENCE = re.compile(r'^\s*(`{3,}|~{3,})(.*)$')
+ASSISTANT_NAMES = {'ai', 'ai 助手', '助手', '智能助手', '智能体', '机器人', '模型'}
 DOCUMENT_TYPES = ('dialogue', 'artifact', 'supplement')
 
 
@@ -109,6 +120,89 @@ def index_pair(catalog, dialogue_name, dialogue, artifact_name, artifact, node=N
     """Number every non-empty line; dialogue lines inherit the speaker of their message."""
     index_document(catalog, 'D', dialogue_name, dialogue, node, default_role=None, document_type='dialogue')
     index_document(catalog, 'A', artifact_name, artifact, node, document_type='artifact')
+
+
+def _dialogue_turns(lines, *, policy):
+    """Recognize explicit turns and repeated speaker labels outside code examples."""
+    plain_roles = policy != MARKDOWN_SPEAKERS
+    hardened = policy == SPEAKER_POLICY
+    candidates, names, excluded = {}, Counter(), set()
+    active_fence = None
+    last_quoted_line = None
+    for number, line in lines:
+        if hardened and line[:4].expandtabs(4).startswith('    '):
+            excluded.add(number)
+            continue
+        if fence := FENCE.match(line):
+            excluded.add(number)
+            marker, trail = fence.groups()
+            if active_fence is None:
+                active_fence = marker
+            elif marker.startswith(active_fence) and not trail.strip():
+                active_fence = None
+            continue
+        if active_fence is not None or line.startswith(('    ', '\t')):
+            excluded.add(number)
+            continue
+        quote = line.lstrip()
+        if plain_roles and (quote.startswith('>') or (hardened and last_quoted_line == number - 1)):
+            excluded.add(number)
+            last_quoted_line = number if quote.lstrip('> ').strip() else None
+            continue
+        if plain_roles and (role := PLAIN_ROLE.match(line)):
+            name = role[1].lower()
+            if not hardened:
+                names[name] += 1
+            candidates[number] = (PLAIN_ROLES[name], True)
+            continue
+        if role := ROLE.match(line):
+            name = role[1].lower()
+            names[name] += 1
+            candidates[number] = (ROLE_NAMES[name], True)
+            continue
+        if not (heading := NAMED_HEAD.match(line)):
+            continue
+        label, tail = heading.groups()
+        if tail and not (tail[0].isspace() or tail[0] in '：:'):
+            continue
+        label = label.strip()
+        colon = label.endswith(('：', ':')) or tail.lstrip().startswith(('：', ':'))
+        label = label.rstrip('：:').strip()
+        timed = TURN_TIME.match(label)
+        if not (speaker := SPEAKER_NAME.fullmatch(TURN_TIME.sub('', label, count=1))):
+            continue
+        name, qualifier = speaker.groups()
+        name = name.strip().lower()
+        role = ROLE_NAMES.get(name, 'agent' if name in ASSISTANT_NAMES else 'participant')
+        names[name] += 1
+        explicit = timed or qualifier or name in ROLE_NAMES or (colon and role == 'agent')
+        candidates[number] = (role, explicit)
+    recurring = len(names) > 1 and any(count > 1 for count in names.values())
+    return {number: role for number, (role, explicit) in candidates.items() if explicit or recurring}, excluded
+
+
+def model_speakers(sample, *, policy=SPEAKER_POLICY):
+    """Provide richer dialogue roles for reasoning while preserving archived citation metadata."""
+    metadata = {key: (source.role, source.message) for key, source in sample.catalog.items()}
+    dialogues = {}
+    for key, source in sample.catalog.items():
+        if source.document_type == 'dialogue':
+            dialogues.setdefault((source.file, source.node), []).append((key, source))
+    for rows in dialogues.values():
+        rows.sort(key=lambda pair: pair[1].line)
+        turns, excluded = _dialogue_turns(((source.line, source.text) for _, source in rows), policy=policy)
+        number, role = 0, None
+        for key, source in rows:
+            if source.line in turns:
+                number += 1
+                role = turns[source.line]
+            if source.line in excluded:
+                metadata[key] = (None, None)
+            elif number:
+                metadata[key] = (role, number)
+            elif source.message is not None or turns:
+                metadata[key] = (None, None)
+    return metadata
 
 
 def index_document(catalog, prefix, name, text, node=None, default_role='material', document_type=None):

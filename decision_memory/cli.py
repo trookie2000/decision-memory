@@ -51,7 +51,9 @@ def parser():
                         help='stage：每个阶段单独提取；requirement：整个需求按节点顺序合并为一份输入')
     check = commands.add_parser('validate', help='离线核对已保存结果及其原文位置')
     add_sample_arguments(check, required=False)
-    check.add_argument('--dataset', type=Path)
+    source = check.add_mutually_exclusive_group()
+    source.add_argument('--dataset', type=Path)
+    source.add_argument('--manifest', type=Path, help='run 使用的原始节点清单')
     check.add_argument('--result', required=True, type=Path)
     check.add_argument('--unit', choices=('stage', 'requirement'), default='requirement',
                         help='stage：每个阶段单独提取；requirement：整个需求按节点顺序合并为一份输入')
@@ -124,9 +126,12 @@ def add_field_arguments(commands):
 
 def result_sample(result, *, dataset=None, manifest=None):
     from .input_contract import describe_input
-    from .requirements import discover_requirements as event_requirements, load_requirement_manifest
+    from .requirements import discover_requirements as event_requirements
     if manifest:
-        sample = load_requirement_manifest(manifest)
+        from .judge_run import load_run_samples
+        scope = 'requirement' if result.get('stage') == 'requirement' else 'stage'
+        samples = [sample for sample in load_run_samples(manifest=manifest, scope=scope)
+                   if sample.sample_id == result.get('sample_id')]
     else:
         fmt = (result.get('input_contract') or {}).get('source_format')
         if fmt == 'manifest' or (result.get('scope') == 'requirement' and fmt is None):
@@ -134,9 +139,9 @@ def result_sample(result, *, dataset=None, manifest=None):
         else:
             samples = (discover_requirements(dataset, sample_id=result['sample_id']) if result['stage'] == 'requirement'
                        else discover_samples(dataset, sample_id=result['sample_id']))
-        if len(samples) != 1:
-            raise ValueError('未找到原结果对应的唯一输入')
-        sample = samples[0]
+    if len(samples) != 1:
+        raise ValueError('未找到原结果对应的唯一输入')
+    sample = samples[0]
     if result.get('schema_version') == 6 and result.get('input_contract') != describe_input(sample):
         raise ValueError('独立字段快照的输入契约与材料不符')
     validate_saved(result, sample)
@@ -535,7 +540,15 @@ def run(args):
         return summary, 2 if summary['failed'] else 0
     if args.command == 'validate':
         result = read_json(args.result)
-        if args.dataset:
+        if not isinstance(result, dict):
+            raise ValueError('结果文件必须是 JSON 对象')
+        if args.manifest and any((args.dialogue, args.artifact, args.stage)):
+            raise ValueError('--manifest 不能同时传独立文件参数')
+        contract = result.get('input_contract')
+        uses_manifest_format = isinstance(contract, dict) and contract.get('source_format') == 'manifest'
+        if args.manifest or (args.dataset and uses_manifest_format):
+            sample = result_sample(result, dataset=args.dataset, manifest=args.manifest)
+        elif args.dataset:
             unit = ('requirement' if result.get('stage') == 'requirement' else
                     'stage' if result.get('stage') in STAGES else args.unit)
             matches = [sample for sample in discover(args.dataset, unit) if sample.sample_id == result.get('sample_id')]
@@ -544,7 +557,7 @@ def run(args):
             sample = matches[0]
         else:
             if not all((args.dialogue, args.artifact, args.stage)):
-                raise ValueError('需要 --dataset 或完整的 --dialogue/--artifact/--stage')
+                raise ValueError('需要 --dataset、--manifest 或完整的 --dialogue/--artifact/--stage')
             sample = load_sample(args.dialogue, args.artifact, args.stage)
         validate_saved(result, sample)
         return {'exact_citations': 'passed', 'items': len(result['items']), 'semantic_quality': 'requires_human_review'}, 0

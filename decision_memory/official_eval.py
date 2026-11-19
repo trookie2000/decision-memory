@@ -16,6 +16,7 @@ import hashlib
 import random
 import re
 import zipfile
+from math import comb
 from pathlib import Path, PurePosixPath
 
 from .evaluation import digest
@@ -257,6 +258,17 @@ def points(value, steps):
     return 0
 
 
+def citation_audit_risk(total, supported):
+    """Project a uniform draw of ten without replacement from fully judged items."""
+    if total < 10:
+        return None
+    combinations = comb(total, 10)
+    counts = {hits: comb(supported, hits) * comb(total - supported, 10 - hits)
+              for hits in (8, 9, 10)}
+    return {'probability_pass': sum(counts.values()) / combinations,
+            'probability_full_marks': counts[10] / combinations}
+
+
 def metrics(judgments, sample_size=10, seed=7):
     items = [row for judgment in judgments for row in judgment['items']]
     positives = [row for judgment in judgments for row in judgment['positives']]
@@ -279,6 +291,9 @@ def metrics(judgments, sample_size=10, seed=7):
         'items': len(items), 'valid': valid, 'precision': precision, 'verdicts': verdicts,
         'citation_support_rate': supported / len(items) if items else None,
         'citation_sample': f'{sampled_ok}/{len(sampled)}',
+        'citation_audit_risk': citation_audit_risk(len(items), supported) if sample_size == 10 else None,
+        'citation_gaps': [{'item_id': row['item_id'], 'notes': row.get('notes', '')}
+                          for row in items if not row['citation_support']],
         'projected_points': {
             'recall': points(recall, ((0.9, 20), (0.8, 16), (0.7, 12))),
             'precision': points(precision, ((0.95, 20), (0.9, 16), (0.85, 12))),
@@ -388,6 +403,16 @@ def render_report(report):
         lines.append(f'| {name} | {pct(value["recall"])} | {pct(value.get("recall_weighted"))} | {pct(value["precision"])} | '
                      f'{pct(value["citation_support_rate"])} | {value["citation_sample"]} | '
                      f'{p["recall"]}/{p["precision"]}/{p["source"] if p["source"] is not None else "—"} |')
+    if risk := total.get('citation_audit_risk'):
+        lines.extend(['', '## 来源抽查稳定性', '',
+                      '假设对本批已判卷条目均匀抽取 10 条，不放回。'
+                      f'达到 8/10 的概率为 {pct(risk["probability_pass"])}，'
+                      f'达到 10/10 的概率为 {pct(risk["probability_full_marks"])}。'
+                      '该计算以现有判卷为准。'])
+    lines.extend(['', '## 来源缺口', ''])
+    for name, value in report['requirements'].items():
+        for row in value.get('citation_gaps', []):
+            lines.append(f'- {name} `{row["item_id"]}`，{row["notes"]}')
     lines.extend(['', '## 漏提与不完整', ''])
     for name, value in report['requirements'].items():
         lines.append(f'- {name}：漏提 {", ".join(value["missing_refs"]) or "无"}；'

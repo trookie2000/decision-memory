@@ -62,6 +62,13 @@ class AuditNeedsReview(RuntimeError):
 
 def _review_markers(payload):
     """A structure-only repair may preserve uncertainty, never erase it."""
+    if not isinstance(payload, dict):
+        return set()
+    # An invalid envelope can still contain explicit uncertainty worth preserving.
+    return _markers_in(payload) | _markers_in(payload.get('response'))
+
+
+def _markers_in(payload):
     result = set()
     if not isinstance(payload, dict):
         return result
@@ -117,9 +124,11 @@ class AuditRun:
         self.state['wall_seconds'] = round(time.monotonic() - self.started, 3)
         write_json(self.path / 'state.json', self.state, overwrite=True)
 
-    def checked(self, number, name, system, user, validator, *, allow_repair=True):
+    def checked(self, number, name, system, user, validator, *, allow_repair=True, repair_plan=None,
+                retry_with_previous_response=True):
         original = user
         required_markers = set()
+        project = None
         for attempt in ((1, 2) if allow_repair else (1,)):
             filename = f'{number:02d}-{name}-{attempt}.json'
             step = {'step': name, 'attempt': attempt, 'status': 'started', 'provider_execution': 'unknown',
@@ -157,22 +166,41 @@ class AuditRun:
             step['call_numbers'] = list(range(before + 1, len(self.client.calls) + 1))
             step.update(status='completed', provider_execution='response_received', validation='pending', finished_at=time.time())
             self.persist()
+            applied = payload
             try:
-                if not required_markers.issubset(_review_markers(payload)):
+                if project:
+                    applied = project(payload)
+                    applied_filename = f'{number:02d}-{name}-{attempt}.applied.json'
+                    write_json(self.path / applied_filename, applied)
+                    step['applied_response_file'] = applied_filename
+                if not required_markers.issubset(_review_markers(applied)):
                     raise ValueError('结构修复不能清除已有 needs_review/partial/unclear 待复核标记')
-                result = validator(payload)
+                result = validator(applied)
             except ValueError as error:
                 step['validation'] = 'invalid'
                 step['failure_phase'] = 'validation'
                 step['validation_error'] = str(error)[:600]
                 self.persist()
                 if attempt == 2 or not allow_repair:
-                    write_json(self.path / 'draft.json', {'validation': 'invalid', 'payload': payload})
+                    write_json(self.path / 'draft.json', {'validation': 'invalid', 'payload': applied})
                     raise
-                required_markers.update(_review_markers(payload))
-                user = (original + '\n上次完整 JSON 存在协议结构错误：' + str(error)
-                        + '\n仅修复协议和来源关联，保留已有 needs_review/partial/unclear 标记；不要补造业务结论。'
-                        + '\n上次完整回复：' + json.dumps(payload, ensure_ascii=False))
+                if retry_with_previous_response:
+                    required_markers.update(_review_markers(payload))
+                try:
+                    scoped = repair_plan(payload, error) if repair_plan else None
+                except ValueError as refusal:
+                    write_json(self.path / 'draft.json', {'validation': 'invalid', 'payload': payload})
+                    step['repair_skipped'] = str(refusal)
+                    self.persist()
+                    raise refusal from error
+                if scoped:
+                    system, user, project = scoped
+                elif retry_with_previous_response:
+                    user = (original + '\n上次完整 JSON 存在协议结构错误：' + str(error)
+                            + '\n仅修复协议和来源关联，保留已有 needs_review/partial/unclear 标记；不要补造业务结论。'
+                            + '\n上次完整回复：' + json.dumps(payload, ensure_ascii=False))
+                else:
+                    user = original + '\n前一份回复未符合协议。请根据原文重新生成。结构错误为 ' + str(error)
             else:
                 step['validation'] = 'valid'
                 self.persist()

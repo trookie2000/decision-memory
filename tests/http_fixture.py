@@ -1,4 +1,5 @@
 import json
+import socket
 import threading
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -47,11 +48,25 @@ def model_server(responses, *, received_headers=None):
             pass
 
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    stopped = threading.Event()
+
+    def serve():
+        while not stopped.is_set():
+            server.handle_request()
+
+    thread = threading.Thread(target=serve, daemon=True)
     thread.start()
     try:
         yield f'http://127.0.0.1:{server.server_port}/chat/completions', requests
     finally:
-        server.shutdown()
-        server.server_close()
-        thread.join()
+        stopped.set()
+        try:
+            # Wake the listener even if its polling timeout is delayed.
+            if thread.is_alive():
+                with socket.create_connection(server.server_address, timeout=2):
+                    pass
+        finally:
+            thread.join(timeout=5)
+            server.server_close()
+        if thread.is_alive():
+            raise RuntimeError('local HTTP fixture did not stop')

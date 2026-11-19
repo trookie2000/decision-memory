@@ -10,6 +10,10 @@ max_tokens = 32000
 max_input_chars = 1000000
 # Disable only if the gateway does not support response_format=json_object.
 json_mode = true
+# Optional for grounded mode. Use an inventory of source IDs before synthesis.
+# grounded_strategy = "evidence-first"
+# Alternative review strategy: surface evidence used by other fields in the same item.
+# grounded_strategy = "witness-review"
 
 # Optional: only enable when supported by the selected gateway/model.
 # stream = true

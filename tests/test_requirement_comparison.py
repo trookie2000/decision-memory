@@ -48,6 +48,29 @@ def replies():
 
 
 class RequirementComparisonTests(unittest.TestCase):
+    def test_model_fixture_wakes_an_idle_selector_on_shutdown(self):
+        script = '''
+import socketserver
+import threading
+from http_fixture import model_server
+
+waiting = threading.Event()
+
+class IdleSelector(socketserver._ServerSelector):
+    def select(self, timeout=None):
+        waiting.set()
+        return super().select()
+
+socketserver._ServerSelector = IdleSelector
+with model_server([]) as (_, requests):
+    assert waiting.wait(2)
+    assert requests == []
+assert requests == []
+'''
+        finished = subprocess.run([sys.executable, '-B', '-c', script], cwd=ROOT / 'tests',
+                                  capture_output=True, text=True, timeout=5)
+        self.assertEqual(finished.returncode, 0, finished.stderr)
+
     def test_real_cli_runs_both_methods_without_reference_leak_or_baseline_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -17,6 +17,20 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 
+JSON_STRING = re.compile(r'"(?:[^"\\]|\\[\s\S])*+"')
+JSON_LAYOUT = re.compile(r'\\[\s\S]|[\r\n\t]')
+JSON_LAYOUT_ESCAPES = {'\r': r'\r', '\n': r'\n', '\t': r'\t'}
+
+
+def escape_json_layout(content):
+    """Preserve literal layout characters inside complete JSON string tokens."""
+    return JSON_STRING.sub(
+        lambda string: JSON_LAYOUT.sub(
+            lambda token: JSON_LAYOUT_ESCAPES.get(token[0], token[0]), string[0]),
+        content,
+    )
+
+
 class ModelError(RuntimeError):
     pass
 
@@ -165,6 +179,7 @@ class Config:
     input_price_per_million: float | None = None
     output_price_per_million: float | None = None
     cost_unit: str = 'CNY'
+    grounded_strategy: str | None = None
 
     def __post_init__(self):
         url = urlsplit(self.endpoint)
@@ -180,6 +195,8 @@ class Config:
         if self.reasoning_effort is not None and self.reasoning_effort not in (
                 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'):
             raise ValueError('reasoning_effort 需要接口支持的推理强度名称')
+        if self.grounded_strategy not in (None, 'draft-review', 'evidence-first', 'witness-review'):
+            raise ValueError('grounded_strategy 需要 draft-review、evidence-first 或 witness-review')
         for name, low, high in (('timeout', 1, 600), ('retries', 0, 3),
                                 ('max_tokens', 1, 64000), ('max_input_chars', 100, 1_000_000)):
             value = getattr(self, name)
@@ -211,6 +228,8 @@ class Config:
             values.pop('stream')
         if self.reasoning_effort is None:
             values.pop('reasoning_effort')
+        if self.grounded_strategy is None:
+            values.pop('grounded_strategy')
         return values
 
 
@@ -530,7 +549,22 @@ class ModelClient:
                 def invalid_constant(_):
                     raise ValueError('非 JSON 数值')
                 try:
-                    result = json.loads(content, parse_constant=invalid_constant)
+                    try:
+                        result = json.loads(content, parse_constant=invalid_constant)
+                    except json.JSONDecodeError as error:
+                        if not error.msg.startswith('Invalid control character'):
+                            raise
+                        normalized = escape_json_layout(content)
+                        if normalized == content:
+                            raise
+                        try:
+                            result = json.loads(normalized, parse_constant=invalid_constant)
+                        except ValueError:
+                            raise error from None
+                        call['json_normalization'] = {
+                            'policy': 'escape-string-layout-v1',
+                            'escaped_characters': len(normalized) - len(content),
+                        }
                 except ValueError as error:
                     raise output_error('审计模式需要完整有效 JSON，不修复截断或非 JSON 文本',
                                        'invalid_json', error) from None

@@ -41,11 +41,12 @@ def extraction_context(sample, mode):
             if mode == 'artifact-only' else sample)
 
 
-def first_request(sample, mode):
+def first_request(sample, mode, *, config=None):
     """The exact initial system/user pair, shared with all-input preflight."""
     if mode == 'grounded':
-        from .grounded import EXTRACT, source_packet
-        return EXTRACT, source_packet(sample)
+        from .grounded import initial_request
+        return initial_request(sample, config.grounded_strategy if config else None,
+                               max_input_chars=config.max_input_chars if config else None)
     from .requirements import RequirementSample, supplement_prompt
     context = extraction_context(sample, mode)
     if isinstance(sample, RequirementSample):

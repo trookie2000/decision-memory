@@ -135,7 +135,7 @@ def execute_run(samples, config, output, *, scope='stage', mode='grounded', max_
     effective = replace(config, retries=0)
     ModelClient(effective).headers()
     for sample in samples:
-        system, user = first_request(sample, mode)
+        system, user = first_request(sample, mode, config=config)
         if len(system) + len(user) > config.max_input_chars:
             raise ValueError('输入预检超过 max_input_chars，未发送请求')
     from .batch_gate import implementation_signature

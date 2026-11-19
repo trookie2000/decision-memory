@@ -17,6 +17,20 @@ FakeClient, UNSTATED = fixtures.FakeClient, fixtures.UNSTATED
 
 
 class JudgmentIntegrityTests(unittest.TestCase):
+    def test_source_draw_risk_is_independent_of_the_seed(self):
+        judgment = {'positives': [], 'items': [
+            {'item_id': f'K{i}', 'verdict': 'valid', 'citation_support': i < 10, 'notes': '原文核查'}
+            for i in range(11)]}
+        first = metrics([judgment], seed=1)
+        second = metrics([judgment], seed=2)
+        risk = first['citation_audit_risk']
+        self.assertEqual(risk, second['citation_audit_risk'])
+        self.assertAlmostEqual(risk['probability_full_marks'], 1 / 11)
+        self.assertEqual(risk['probability_pass'], 1)
+        self.assertEqual([row['item_id'] for row in first['citation_gaps']], ['K10'])
+        self.assertIsNone(metrics([self.validate(self.payload())])['citation_audit_risk'])
+        self.assertIsNone(metrics([judgment], sample_size=5)['citation_audit_risk'])
+
     def payload(self):
         return {
             'items': [

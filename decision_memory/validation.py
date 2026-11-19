@@ -5,6 +5,13 @@ from .sources import Sample
 KINDS = ('decision', 'correction', 'constraint', 'contract', 'metric', 'fallback', 'scope', 'implicit', 'change')
 
 
+def unwrap_response(payload):
+    """Accept a single structural wrapper around an otherwise unchanged reply."""
+    if isinstance(payload, dict) and set(payload) == {'response'} and isinstance(payload['response'], dict):
+        return payload['response']
+    return payload
+
+
 def validate_evidence(evidence: object, sample: Sample, location: str) -> list[dict]:
     if not isinstance(evidence, list):
         raise ValueError(f'{location} 证据必须是数组')
